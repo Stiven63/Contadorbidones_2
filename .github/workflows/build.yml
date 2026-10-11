@@ -63,8 +63,8 @@ jobs:
                   applicationId "cl.bidones.contador"
                   minSdk 26
                   targetSdk 34
-                  versionCode 5
-                  versionName "5.0"
+                  versionCode 7
+                  versionName "7.0"
               }
 
               // clave fija para firmar: asi cada version nueva se instala encima sin borrar los datos
@@ -102,6 +102,9 @@ jobs:
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+              <!-- para que el boton Llamar llame directo (se pide permiso la primera vez) -->
+              <uses-permission android:name="android.permission.CALL_PHONE" />
+
               <application
                   android:allowBackup="true"
                   android:icon="@mipmap/ic_launcher"
@@ -128,15 +131,36 @@ jobs:
           cat > app/src/main/java/cl/bidones/contador/MainActivity.java <<'FIN_ARCHIVO'
           package cl.bidones.contador;
 
+          import android.Manifest;
           import android.app.Activity;
+          import android.content.Intent;
+          import android.content.pm.PackageManager;
+          import android.database.Cursor;
+          import android.net.Uri;
           import android.os.Bundle;
+          import android.provider.ContactsContract;
+          import android.webkit.JavascriptInterface;
+          import android.webkit.WebResourceRequest;
           import android.webkit.WebSettings;
           import android.webkit.WebView;
           import android.webkit.WebViewClient;
 
+          import org.json.JSONObject;
+
+          import java.io.ByteArrayOutputStream;
+          import java.io.InputStream;
+          import java.io.OutputStream;
+
           public class MainActivity extends Activity {
 
+              private static final int GUARDAR = 1;
+              private static final int ABRIR = 2;
+              private static final int CONTACTO = 3;
+              private static final int PERMISO_LLAMAR = 10;
+
               private WebView web;
+              private String contenidoPorGuardar = null;
+              private Uri numeroPorLlamar = null;
 
               @Override
               protected void onCreate(Bundle savedInstanceState) {
@@ -149,13 +173,190 @@ jobs:
                   config.setJavaScriptEnabled(true);
                   config.setDomStorageEnabled(true);
 
-                  // para que todo se abra dentro de la app y no en el navegador
-                  web.setWebViewClient(new WebViewClient());
+                  // la pantalla se queda dentro de la app; llamadas y whatsapp se abren afuera
+                  web.setWebViewClient(new WebViewClient() {
+                      @Override
+                      public boolean shouldOverrideUrlLoading(WebView vista, WebResourceRequest pedido) {
+                          Uri url = pedido.getUrl();
+                          String tipo = url.getScheme();
+                          if ("file".equals(tipo)) {
+                              return false;
+                          }
+                          if ("tel".equals(tipo)) {
+                              llamar(url);
+                          } else if ("wa.me".equals(url.getHost())) {
+                              abrirWhatsApp(url);
+                          } else {
+                              abrir(new Intent(Intent.ACTION_VIEW, url));
+                          }
+                          return true;
+                      }
+                  });
+
+                  // funciones que la pantalla puede usar: Android.guardarArchivo(...) y Android.abrirArchivo()
+                  web.addJavascriptInterface(new Puente(), "Android");
 
                   setContentView(web);
 
                   // la pantalla esta en app/src/main/assets/index.html
                   web.loadUrl("file:///android_asset/index.html");
+              }
+
+              private boolean abrir(Intent i) {
+                  try {
+                      startActivity(i);
+                      return true;
+                  } catch (Exception e) {
+                      return false;
+                  }
+              }
+
+              // llama directo; la primera vez pide permiso. Si no lo dan, abre el marcador con el numero escrito
+              private void llamar(Uri numero) {
+                  if (checkSelfPermission(Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED) {
+                      if (!abrir(new Intent(Intent.ACTION_CALL, numero))) {
+                          abrir(new Intent(Intent.ACTION_DIAL, numero));
+                      }
+                  } else {
+                      numeroPorLlamar = numero;
+                      requestPermissions(new String[]{Manifest.permission.CALL_PHONE}, PERMISO_LLAMAR);
+                  }
+              }
+
+              @Override
+              public void onRequestPermissionsResult(int pedido, String[] permisos, int[] resultados) {
+                  super.onRequestPermissionsResult(pedido, permisos, resultados);
+                  if (pedido == PERMISO_LLAMAR && numeroPorLlamar != null) {
+                      Uri numero = numeroPorLlamar;
+                      numeroPorLlamar = null;
+                      if (resultados.length > 0 && resultados[0] == PackageManager.PERMISSION_GRANTED) {
+                          abrir(new Intent(Intent.ACTION_CALL, numero));
+                      } else {
+                          abrir(new Intent(Intent.ACTION_DIAL, numero));
+                      }
+                  }
+              }
+
+              // primero intenta WhatsApp normal, despues WhatsApp Business, y si no hay ninguno el navegador
+              private void abrirWhatsApp(Uri url) {
+                  String numero = url.getPath() == null ? "" : url.getPath().replace("/", "");
+                  String texto = url.getQueryParameter("text");
+                  String direccion = "https://api.whatsapp.com/send?phone=" + numero;
+                  if (texto != null && texto.length() > 0) {
+                      // el mensaje queda escrito en el chat; el que envia es la persona
+                      direccion += "&text=" + Uri.encode(texto);
+                  }
+                  Uri directo = Uri.parse(direccion);
+                  Intent normal = new Intent(Intent.ACTION_VIEW, directo);
+                  normal.setPackage("com.whatsapp");
+                  if (abrir(normal)) return;
+                  Intent business = new Intent(Intent.ACTION_VIEW, directo);
+                  business.setPackage("com.whatsapp.w4b");
+                  if (abrir(business)) return;
+                  abrir(new Intent(Intent.ACTION_VIEW, url));
+              }
+
+              private class Puente {
+                  @JavascriptInterface
+                  public void elegirContacto() {
+                      // abre la agenda; solo se puede leer el contacto que se elija
+                      final Intent i = new Intent(Intent.ACTION_PICK, ContactsContract.CommonDataKinds.Phone.CONTENT_URI);
+                      runOnUiThread(new Runnable() {
+                          @Override
+                          public void run() {
+                              try {
+                                  startActivityForResult(i, CONTACTO);
+                              } catch (Exception e) {
+                                  llamarPantalla("archivoError()");
+                              }
+                          }
+                      });
+                  }
+
+                  @JavascriptInterface
+                  public void guardarArchivo(String nombre, String tipo, String contenido) {
+                      contenidoPorGuardar = contenido;
+                      final Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+                      i.addCategory(Intent.CATEGORY_OPENABLE);
+                      i.setType(tipo);
+                      i.putExtra(Intent.EXTRA_TITLE, nombre);
+                      runOnUiThread(new Runnable() {
+                          @Override
+                          public void run() {
+                              startActivityForResult(i, GUARDAR);
+                          }
+                      });
+                  }
+
+                  @JavascriptInterface
+                  public void abrirArchivo() {
+                      final Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                      i.addCategory(Intent.CATEGORY_OPENABLE);
+                      i.setType("*/*");
+                      runOnUiThread(new Runnable() {
+                          @Override
+                          public void run() {
+                              startActivityForResult(i, ABRIR);
+                          }
+                      });
+                  }
+              }
+
+              @Override
+              protected void onActivityResult(int pedido, int resultado, Intent datos) {
+                  super.onActivityResult(pedido, resultado, datos);
+
+                  if (resultado != RESULT_OK || datos == null || datos.getData() == null) {
+                      llamarPantalla(pedido == CONTACTO ? "contactoCancelado()" : "archivoCancelado()");
+                      return;
+                  }
+                  Uri archivo = datos.getData();
+
+                  try {
+                      if (pedido == CONTACTO) {
+                          String[] columnas = {
+                              ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+                              ContactsContract.CommonDataKinds.Phone.NUMBER
+                          };
+                          Cursor fila = getContentResolver().query(archivo, columnas, null, null, null);
+                          if (fila != null && fila.moveToFirst()) {
+                              String nombre = fila.getString(0);
+                              String numero = fila.getString(1);
+                              fila.close();
+                              llamarPantalla("contactoElegido(" + JSONObject.quote(nombre == null ? "" : nombre) + ", " + JSONObject.quote(numero == null ? "" : numero) + ")");
+                          } else {
+                              if (fila != null) fila.close();
+                              llamarPantalla("contactoCancelado()");
+                          }
+                      } else if (pedido == GUARDAR) {
+                          if (contenidoPorGuardar == null) {
+                              llamarPantalla("archivoError()");
+                              return;
+                          }
+                          OutputStream salida = getContentResolver().openOutputStream(archivo);
+                          salida.write(contenidoPorGuardar.getBytes("UTF-8"));
+                          salida.close();
+                          contenidoPorGuardar = null;
+                          llamarPantalla("archivoGuardado()");
+                      } else if (pedido == ABRIR) {
+                          InputStream entrada = getContentResolver().openInputStream(archivo);
+                          ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+                          byte[] trozo = new byte[8192];
+                          int leidos;
+                          while ((leidos = entrada.read(trozo)) > 0) {
+                              bytes.write(trozo, 0, leidos);
+                          }
+                          entrada.close();
+                          String texto = bytes.toString("UTF-8");
+                          llamarPantalla("recibirArchivo(" + JSONObject.quote(texto) + ")");
+                      }
+                  } catch (Exception e) {
+                      llamarPantalla("archivoError()");
+                  }
+              }
+
+              private void llamarPantalla(String codigo) {
+                  web.evaluateJavascript(codigo, null);
               }
 
               @Override
@@ -344,6 +545,41 @@ jobs:
           .vendido td.n { font-size: 1.15rem; font-weight: 800; }
           .vendido tr.suma td { font-weight: 800; border-top: 2px solid rgba(255,255,255,0.5); }
           .btn-otro { align-self: flex-start; }
+          .ficha-extra { font-size: 0.9rem; opacity: 0.9; overflow-wrap: anywhere; }
+          .ficha-btns { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+          .ficha-btns a, .ficha-btns button {
+            display: flex; align-items: center; justify-content: center; height: 44px; border-radius: 12px;
+            border: 1px solid var(--line); background: var(--card); color: var(--fg); text-decoration: none;
+            font-size: 0.95rem; font-weight: 700; font-family: var(--fuente); cursor: pointer;
+          }
+          .ficha-btns .wsp { background: #1f9d55; border-color: #1f9d55; color: #fff; }
+          .ficha-btns .rojo { color: var(--peligro); border-color: var(--peligro); }
+          .ficha-btns .ancho { grid-column: 1 / -1; }
+          .ficha-btns .llamar { background: var(--agua); border-color: var(--agua); color: var(--agua-txt); }
+          .ficha-btns .wsp-cobro { background: var(--card); border: 2px solid #1f9d55; color: var(--fg); }
+          textarea {
+            min-height: 70px; padding: 10px 12px; font-size: 1rem; font-family: var(--fuente); resize: vertical;
+            border: 1px solid var(--line); border-radius: 12px; background: var(--bg); color: var(--fg); width: 100%;
+          }
+          input[type=tel] {
+            height: 50px; padding: 0 12px; font-size: 1.05rem; font-family: var(--fuente);
+            border: 1px solid var(--line); border-radius: 12px; background: var(--bg); color: var(--fg); width: 100%;
+          }
+          .confirmar { border: 2px solid var(--peligro); }
+          .confirmar p { margin: 0; }
+          .btn-rojo { background: var(--peligro); color: #fff; }
+          .fila-btns { display: flex; flex-wrap: wrap; gap: 8px; }
+          .fila-btns > * { flex: 1 1 140px; }
+          .filtro { display: flex; gap: 8px; }
+          .filtro .chip { flex: 1; height: 40px; font-size: 0.9rem; }
+          .mini-debe { display: block; color: var(--peligro); font-size: 0.75rem; font-weight: 800; }
+          .btn-sec2 {
+            height: 48px; border-radius: 12px; border: 1px solid var(--agua); background: transparent; color: var(--fg);
+            font-size: 1rem; font-weight: 700; cursor: pointer; font-family: var(--fuente);
+          }
+          .tel-fila { display: flex; gap: 8px; }
+          .tel-fila input { flex: 1; min-width: 0; }
+          .tel-fila button { flex: none; height: 50px; padding: 0 12px; }
           .vacio { text-align: center; color: var(--muted); padding: 22px 16px; border: 1px dashed var(--line); border-radius: 16px; }
           </style>
           </head>
@@ -387,6 +623,12 @@ jobs:
                 </label>
                 <label>Dirección
                   <input type="text" id="direccion" list="listaDirecciones" autocomplete="off" placeholder="Ej: Los Aromos 123">
+                </label>
+                <label>Teléfono (opcional)
+                  <div class="tel-fila">
+                    <input type="tel" id="telefono" inputmode="tel" autocomplete="off" placeholder="Ej: 9 1234 5678">
+                    <button type="button" class="btn-sec2 btn-contactos" id="btnContactoVenta">Contactos</button>
+                  </div>
                 </label>
                 <div class="cliente-ok" id="clienteOk"></div>
                 <datalist id="listaNombres"></datalist>
@@ -438,7 +680,11 @@ jobs:
 
             <!-- CLIENTES -->
             <section class="panel" id="tab-clientes" hidden>
-              <input type="search" id="buscar" placeholder="Buscar por nombre o dirección">
+              <input type="search" id="buscar" placeholder="Buscar por nombre, dirección o teléfono">
+              <div class="filtro" id="filtros">
+                <button type="button" class="chip activo" id="filtroTodos">Todos</button>
+                <button type="button" class="chip" id="filtroDeben">Solo los que deben</button>
+              </div>
               <div id="listaClientes" class="panel"></div>
             </section>
 
@@ -467,9 +713,23 @@ jobs:
                 <button type="button" class="btn" id="btnPrecio">Guardar precios</button>
                 <p class="aviso" id="avisoPrecio"></p>
               </div>
+              <div class="caja" id="cajaRespaldo">
+                <h2>Respaldo</h2>
+                <p class="aviso">Los datos viven solo en este teléfono. Guarda un respaldo seguido (en Drive o en el teléfono) para no perder nada si el teléfono se pierde o se cambia.</p>
+                <p class="aviso" id="ultimoRespaldo"></p>
+                <button type="button" class="btn" id="btnRespaldo">Guardar respaldo</button>
+                <button type="button" class="btn-sec2" id="btnRecuperar">Recuperar desde un respaldo</button>
+                <div id="confirmarRecuperar"></div>
+                <p class="aviso" id="avisoRespaldo"></p>
+              </div>
+              <div class="caja" id="cajaExcel">
+                <h2>Exportar a Excel</h2>
+                <p class="aviso">Crea un archivo con todas las ventas (fecha, cliente, producto, cantidad, precio, pago) que se abre en Excel o Google Sheets.</p>
+                <button type="button" class="btn-sec2" id="btnExcel">Exportar ventas a Excel</button>
+              </div>
               <div class="caja">
                 <h2>Importante</h2>
-                <p class="aviso">Los datos se guardan en este teléfono. Si se desinstala la app, se borran. Para actualizarla, instala la versión nueva encima.</p>
+                <p class="aviso">Si se desinstala la app, se borran los datos del teléfono (por eso el respaldo). Para actualizarla, instala la versión nueva encima.</p>
               </div>
             </section>
           </div>
@@ -495,6 +755,12 @@ jobs:
           let cobrando = null;   // id de la venta que se esta cobrando, o "todo:" + id del cliente
           const MEDIOS = { efectivo: "Efectivo", transferencia: "Transferencia", tarjeta: "Tarjeta", pendiente: "Pendiente" };
           let clienteAbierto = null;
+          let editandoCliente = null;   // id del cliente que se esta editando
+          let borrandoCliente = null;   // id del cliente que se quiere eliminar
+          let soloDeudores = false;
+          let respaldoPorRecuperar = null;
+          let avisoFicha = "";
+          let contactoPara = "";   // "venta" o "editar": donde poner el contacto elegido
 
           const $ = (id) => document.getElementById(id);
 
@@ -558,6 +824,13 @@ jobs:
           }
           function normal(txt) {
             return (txt || "").trim().toLowerCase();
+          }
+          // telefono chileno a formato internacional: 9 1234 5678 -> 56912345678
+          function telInternacional(tel) {
+            let d = (tel || "").replace(/\D/g, "");
+            if (d.length === 9 && d.charAt(0) === "9") d = "56" + d;
+            if (d.length === 8) d = "569" + d;
+            return d;
           }
           function nombreDe(c) {
             if (!c) return "Cliente borrado";
@@ -693,6 +966,7 @@ jobs:
             if (c) {
               if (desde === "nombre" && c.direccion && !$("direccion").value.trim()) $("direccion").value = c.direccion;
               if (desde === "direccion" && c.nombre && !$("nombre").value.trim()) $("nombre").value = c.nombre;
+              if (c.telefono && !$("telefono").value.trim()) $("telefono").value = c.telefono;
               const t = totalesCliente(c.id);
               $("clienteOk").textContent = "Cliente registrado: lleva " + textoUnidades(t.porProd) + " (" + plata(t.plata) + ")" + (t.deuda > 0 ? " · DEBE " + plata(t.deuda) : "");
             } else if ($("nombre").value.trim() || $("direccion").value.trim()) {
@@ -736,7 +1010,7 @@ jobs:
           $("btnOtro").onclick = () => {
             const c = clientes.find(x => x.id === ultimoCliente);
             if (!c) return;
-            $("nombre").value = c.nombre; $("direccion").value = c.direccion;
+            $("nombre").value = c.nombre; $("direccion").value = c.direccion; $("telefono").value = c.telefono || "";
             revisarCliente("nombre");
             $("btnOtro").hidden = true;
             $("avisoVenta").textContent = "";
@@ -759,11 +1033,13 @@ jobs:
             if (cant < 1) { $("avisoVenta").textContent = "La cantidad tiene que ser 1 o más."; return; }
             if (isNaN(precio) || precio < 0) { $("avisoVenta").textContent = "Escribe el " + PRODUCTOS[productoElegido].precioTxt.toLowerCase() + "."; return; }
 
+            const telefono = $("telefono").value.trim();
             let c = buscarCliente(nombre, direccion);
             if (!c) {
-              c = { id: "c" + Date.now(), nombre: nombre, direccion: direccion };
+              c = { id: "c" + Date.now(), nombre: nombre, direccion: direccion, telefono: telefono };
               clientes.push(c);
             } else {
+              if (telefono) c.telefono = telefono;
               // si faltaba algun dato del cliente, se completa
               if (!c.nombre && nombre) c.nombre = nombre;
               if (direccion && normal(c.direccion) !== normal(direccion)) c.direccion = direccion;
@@ -781,7 +1057,7 @@ jobs:
 
             ultimoCliente = c.id;
             $("btnOtro").hidden = false;
-            $("nombre").value = ""; $("direccion").value = ""; $("cantidad").value = 1;
+            $("nombre").value = ""; $("direccion").value = ""; $("telefono").value = ""; $("cantidad").value = 1;
             $("clienteOk").textContent = "";
             elegirProducto("b20");
             elegirPago("efectivo");
@@ -800,7 +1076,8 @@ jobs:
             const fecha = new Date(v.ts).toLocaleDateString("es-CL", { day: "numeric", month: "short", year: "numeric" });
 
             fila.innerHTML = '<div class="info"><div class="quien"></div><div class="det"></div><span class="etiqueta"></span></div><span class="monto"></span><div class="acciones"></div>';
-            fila.querySelector(".quien").textContent = mostrarCliente ? nombreDe(c) : fecha;
+            const quien = c ? nombreDe(c) : (v.nombreBorrado ? v.nombreBorrado + " (borrado)" : "Cliente borrado");
+            fila.querySelector(".quien").textContent = mostrarCliente ? quien : fecha;
             fila.querySelector(".det").textContent = hora + " · " + v.cantidad + " " + PRODUCTOS[prod(v)].nombre + " a " + plata(v.precio);
             fila.querySelector(".monto").textContent = plata(v.cantidad * v.precio);
 
@@ -852,20 +1129,34 @@ jobs:
             // si hay un cliente abierto se muestra su ficha completa
             if (clienteAbierto && clientes.find(c => c.id === clienteAbierto)) {
               $("buscar").hidden = true;
+              $("filtros").hidden = true;
               dibujarFicha(lista, clientes.find(c => c.id === clienteAbierto));
               return;
             }
             clienteAbierto = null;
             $("buscar").hidden = false;
+            $("filtros").hidden = false;
             const q = normal($("buscar").value);
 
-            const datos = clientes
-              .filter(c => !q || normal(c.nombre).includes(q) || normal(c.direccion).includes(q))
-              .map(c => ({ c: c, t: totalesCliente(c.id) }))
-              .sort((a, b) => b.t.ultimo - a.t.ultimo);
+            let datos = clientes
+              .filter(c => !q || normal(c.nombre).includes(q) || normal(c.direccion).includes(q) || (c.telefono || "").replace(/\D/g, "").includes(q.replace(/\D/g, "") || "x"))
+              .map(c => ({ c: c, t: totalesCliente(c.id) }));
+
+            const cuantosDeben = datos.filter(d => d.t.deuda > 0).length;
+            $("filtroDeben").textContent = "Solo los que deben (" + cuantosDeben + ")";
+
+            if (soloDeudores) {
+              // los que deben, primero el que debe mas
+              datos = datos.filter(d => d.t.deuda > 0).sort((a, b) => b.t.deuda - a.t.deuda);
+            } else {
+              datos.sort((a, b) => b.t.ultimo - a.t.ultimo);
+            }
 
             if (datos.length === 0) {
-              lista.innerHTML = '<div class="vacio">' + (q ? "No hay clientes con esa búsqueda." : "Todavía no hay clientes.<br>Se agregan solos al guardar una venta.") + '</div>';
+              let txt = "Todavía no hay clientes.<br>Se agregan solos al guardar una venta.";
+              if (soloDeudores) txt = "Nadie debe. Todos están al día.";
+              else if (q) txt = "No hay clientes con esa búsqueda.";
+              lista.innerHTML = '<div class="vacio">' + txt + '</div>';
               return;
             }
 
@@ -898,7 +1189,7 @@ jobs:
             volver.className = "btn-sec";
             volver.textContent = "‹ Volver a clientes";
             volver.style.alignSelf = "flex-start";
-            volver.onclick = () => { clienteAbierto = null; borrarPendiente = null; cobrando = null; dibujarClientes(); };
+            volver.onclick = () => { cerrarFicha(); dibujarClientes(); };
             lista.appendChild(volver);
 
             // cabecera con totales
@@ -916,7 +1207,77 @@ jobs:
             debe.innerHTML = "<span>Debe</span><b></b>";
             debe.querySelector("b").textContent = t.deuda > 0 ? plata(t.deuda) : "$0 (al día)";
             cab.appendChild(debe);
+            if (c.telefono || c.notas) {
+              const extra = document.createElement("div");
+              extra.className = "ficha-extra";
+              extra.textContent = (c.telefono ? "Tel: " + c.telefono : "") + (c.telefono && c.notas ? " · " : "") + (c.notas ? "Nota: " + c.notas : "");
+              cab.insertBefore(extra, cab.querySelector(".ficha-tots"));
+            }
             lista.appendChild(cab);
+
+            if (avisoFicha) {
+              const av = document.createElement("p");
+              av.className = "aviso";
+              av.textContent = avisoFicha;
+              lista.appendChild(av);
+              avisoFicha = "";
+            }
+
+            if (editandoCliente === c.id) {
+              lista.appendChild(formEditar(c));
+              return;
+            }
+            if (borrandoCliente === c.id) {
+              lista.appendChild(confirmarEliminar(c, susVentas));
+              return;
+            }
+
+            // botones: editar, llamar, whatsapp, eliminar
+            const btns = document.createElement("div");
+            btns.className = "ficha-btns";
+            const bEditar = document.createElement("button");
+            bEditar.type = "button"; bEditar.textContent = "Editar datos";
+            bEditar.onclick = () => { editandoCliente = c.id; borrandoCliente = null; dibujarClientes(); };
+            btns.appendChild(bEditar);
+            const tel = telInternacional(c.telefono);
+            if (tel) {
+              const quien = c.nombre ? " " + c.nombre : "";
+              // llamada normal: la app llama directo (la primera vez pide permiso)
+              const aLlamar = document.createElement("a");
+              aLlamar.href = "tel:+" + tel; aLlamar.textContent = "Llamar"; aLlamar.className = "llamar";
+              btns.appendChild(aLlamar);
+              // mensaje de whatsapp: queda escrito, solo falta tocar enviar
+              const aWsp = document.createElement("a");
+              aWsp.href = "https://wa.me/" + tel + "?text=" + encodeURIComponent("Hola" + quien + ", ¿cómo está? Le escribo por los bidones de agua.");
+              aWsp.textContent = "Mensaje WhatsApp"; aWsp.className = "wsp";
+              btns.appendChild(aWsp);
+              // llamada de whatsapp: se abre el chat y se toca el telefono de arriba
+              const aWspLlamar = document.createElement("a");
+              aWspLlamar.href = "https://wa.me/" + tel; aWspLlamar.textContent = "Llamada WhatsApp"; aWspLlamar.className = "wsp";
+              aWspLlamar.onclick = () => { avisoFicha = "En el chat de WhatsApp toca el ícono del teléfono (arriba a la derecha) para llamar."; setTimeout(dibujarClientes, 300); };
+              btns.appendChild(aWspLlamar);
+              // cobrar: mensaje con lo que debe
+              if (t.deuda > 0) {
+                const aCobro = document.createElement("a");
+                const msg = "Hola" + quien + ", le recuerdo que tiene un saldo pendiente de " + plata(t.deuda) +
+                  " por " + textoPendiente(susVentas) + ". Puede pagar en efectivo, transferencia o tarjeta. ¡Muchas gracias!";
+                aCobro.href = "https://wa.me/" + tel + "?text=" + encodeURIComponent(msg);
+                aCobro.textContent = "Cobrar por WhatsApp (" + plata(t.deuda) + ")"; aCobro.className = "wsp-cobro ancho";
+                btns.appendChild(aCobro);
+              }
+            } else {
+              const sinTel = document.createElement("button");
+              sinTel.type = "button"; sinTel.textContent = "+ Agregar teléfono (para llamar y WhatsApp)";
+              sinTel.onclick = () => { editandoCliente = c.id; borrandoCliente = null; dibujarClientes(); };
+              sinTel.className = "ancho";
+              btns.appendChild(sinTel);
+            }
+            const bBorrar = document.createElement("button");
+            bBorrar.type = "button"; bBorrar.textContent = "Eliminar cliente"; bBorrar.className = "rojo ancho";
+            if (!tel) bEditar.className = "ancho";
+            bBorrar.onclick = () => { borrandoCliente = c.id; editandoCliente = null; dibujarClientes(); };
+            btns.appendChild(bBorrar);
+            lista.appendChild(btns);
 
             if (t.deuda > 0) {
               const pend = susVentas.filter(esPendiente);
@@ -941,7 +1302,7 @@ jobs:
             nueva.className = "btn";
             nueva.textContent = "+ Nueva venta a este cliente";
             nueva.onclick = () => {
-              $("nombre").value = c.nombre; $("direccion").value = c.direccion;
+              $("nombre").value = c.nombre || ""; $("direccion").value = c.direccion || ""; $("telefono").value = c.telefono || "";
               document.querySelector('.tabs button[data-tab="venta"]').click();
               revisarCliente("nombre");
               $("cantidad").focus();
@@ -984,6 +1345,113 @@ jobs:
             lista.appendChild(caja);
           }
 
+          // ej: "10 bid. 20 L y 1 disp. USB" (solo lo que esta pendiente)
+          function textoPendiente(susVentas) {
+            const cuenta = cuentaVacia();
+            susVentas.filter(esPendiente).forEach(v => { cuenta[prod(v)] += v.cantidad; });
+            const nombres = {
+              b20: ["bidón de 20 litros", "bidones de 20 litros"],
+              b10: ["bidón de 10 litros", "bidones de 10 litros"],
+              dusb: ["dispensador USB", "dispensadores USB"],
+              dbas: ["dispensador básico", "dispensadores básicos"]
+            };
+            const partes = ORDEN.filter(p => cuenta[p] > 0).map(p => cuenta[p] + " " + nombres[p][cuenta[p] === 1 ? 0 : 1]);
+            if (partes.length <= 1) return partes.join("");
+            return partes.slice(0, -1).join(", ") + " y " + partes[partes.length - 1];
+          }
+
+          function cerrarFicha() {
+            clienteAbierto = null; borrarPendiente = null; cobrando = null;
+            editandoCliente = null; borrandoCliente = null;
+          }
+
+          // formulario para cambiar nombre, direccion, telefono y notas
+          function formEditar(c) {
+            const caja = document.createElement("div");
+            caja.className = "caja";
+            caja.innerHTML =
+              '<h2>Editar cliente</h2>' +
+              '<label>Nombre<input type="text" id="edNombre" autocomplete="off"></label>' +
+              '<label>Dirección<input type="text" id="edDireccion" autocomplete="off"></label>' +
+              '<label>Teléfono (opcional)<div class="tel-fila"><input type="tel" id="edTelefono" inputmode="tel" placeholder="Ej: 9 1234 5678"><button type="button" class="btn-sec2 btn-contactos" id="edContacto">Contactos</button></div></label>' +
+              '<label>Notas (opcional)<textarea id="edNotas" placeholder="Ej: casa azul, tocar fuerte"></textarea></label>' +
+              '<p class="aviso" id="edAviso"></p>' +
+              '<div class="fila-btns"><button type="button" class="btn" id="edGuardar">Guardar cambios</button><button type="button" class="btn-sec2" id="edCancelar">Cancelar</button></div>';
+            caja.querySelector("#edNombre").value = c.nombre || "";
+            caja.querySelector("#edDireccion").value = c.direccion || "";
+            caja.querySelector("#edTelefono").value = c.telefono || "";
+            caja.querySelector("#edNotas").value = c.notas || "";
+
+            const bc = caja.querySelector("#edContacto");
+            if (!hayAndroid) bc.hidden = true;
+            bc.onclick = () => { contactoPara = "editar"; Android.elegirContacto(); };
+            caja.querySelector("#edCancelar").onclick = () => { editandoCliente = null; dibujarClientes(); };
+            caja.querySelector("#edGuardar").onclick = () => {
+              const nombre = caja.querySelector("#edNombre").value.trim();
+              const direccion = caja.querySelector("#edDireccion").value.trim();
+              const aviso = caja.querySelector("#edAviso");
+              if (!nombre && !direccion) { aviso.textContent = "El cliente necesita al menos un nombre o una dirección."; return; }
+              const otro = clientes.find(x => x.id !== c.id && nombre && normal(x.nombre) === normal(nombre));
+              if (otro) { aviso.textContent = "Ya existe otro cliente llamado " + otro.nombre + ". Usa un nombre distinto (ej: agrega el apellido)."; return; }
+              c.nombre = nombre;
+              c.direccion = direccion;
+              c.telefono = caja.querySelector("#edTelefono").value.trim();
+              c.notas = caja.querySelector("#edNotas").value.trim();
+              guardar();
+              editandoCliente = null;
+              avisoFicha = "Datos del cliente guardados.";
+              todo();
+            };
+            return caja;
+          }
+
+          // confirmar antes de eliminar un cliente
+          function confirmarEliminar(c, susVentas) {
+            const caja = document.createElement("div");
+            caja.className = "caja confirmar";
+            const n = susVentas.length;
+            const p = document.createElement("p");
+            p.textContent = n === 0
+              ? "¿Eliminar a " + nombreDe(c) + "? No tiene pedidos."
+              : "¿Eliminar a " + nombreDe(c) + "? Tiene " + n + (n === 1 ? " pedido" : " pedidos") + ". Esto no se puede deshacer.";
+            caja.appendChild(p);
+
+            const fila = document.createElement("div");
+            fila.className = "panel";
+            const borrarTodo = document.createElement("button");
+            borrarTodo.type = "button"; borrarTodo.className = "btn btn-rojo";
+            borrarTodo.textContent = n === 0 ? "Sí, eliminar cliente" : (n === 1 ? "Eliminar cliente y su pedido" : "Eliminar cliente y sus " + n + " pedidos");
+            borrarTodo.onclick = () => eliminarCliente(c, true);
+            fila.appendChild(borrarTodo);
+            if (n > 0) {
+              const soloCliente = document.createElement("button");
+              soloCliente.type = "button"; soloCliente.className = "btn-sec2";
+              soloCliente.textContent = "Eliminar cliente, pero dejar sus pedidos en el historial";
+              soloCliente.onclick = () => eliminarCliente(c, false);
+              fila.appendChild(soloCliente);
+            }
+            const cancelar = document.createElement("button");
+            cancelar.type = "button"; cancelar.className = "btn-sec";
+            cancelar.textContent = "Cancelar";
+            cancelar.onclick = () => { borrandoCliente = null; dibujarClientes(); };
+            fila.appendChild(cancelar);
+            caja.appendChild(fila);
+            return caja;
+          }
+
+          function eliminarCliente(c, conVentas) {
+            if (conVentas) {
+              ventas = ventas.filter(v => v.clienteId !== c.id);
+            } else {
+              // los pedidos quedan, con el nombre guardado para que se sepa de quien eran
+              ventas.forEach(v => { if (v.clienteId === c.id) v.nombreBorrado = nombreDe(c); });
+            }
+            clientes = clientes.filter(x => x.id !== c.id);
+            guardar();
+            cerrarFicha();
+            todo();
+          }
+
           function tablaResumen(titulo, datos, nombreClave) {
             const caja = document.createElement("div");
             caja.className = "dia";
@@ -1000,11 +1468,25 @@ jobs:
               tds[2].textContent = c.b10;
               tds[3].textContent = c.dusb + c.dbas;
               tds[4].textContent = plata(datos[k].p);
+              if (datos[k].pend > 0) {
+                const sp = document.createElement("span");
+                sp.className = "mini-debe";
+                sp.textContent = "debe " + plata(datos[k].pend);
+                tds[4].appendChild(sp);
+              }
               cuerpo.appendChild(tr);
             });
             return caja;
           }
           $("buscar").addEventListener("input", dibujarClientes);
+          function ponerFiltro(deudores) {
+            soloDeudores = deudores;
+            $("filtroTodos").classList.toggle("activo", !deudores);
+            $("filtroDeben").classList.toggle("activo", deudores);
+            dibujarClientes();
+          }
+          $("filtroTodos").onclick = () => ponerFiltro(false);
+          $("filtroDeben").onclick = () => ponerFiltro(true);
 
           // ===================== HISTORIAL =====================
           function dibujarHistorial() {
@@ -1014,6 +1496,23 @@ jobs:
               lista.innerHTML = '<div class="vacio">Todavía no hay ventas registradas.</div>';
               return;
             }
+            // resumen por mes: unidades de cada producto, total vendido y lo que falta cobrar
+            const porMes = {};
+            ventas.forEach(v => {
+              const d = new Date(v.ts);
+              const km = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
+              if (!porMes[km]) porMes[km] = { c: cuentaVacia(), p: 0, pend: 0 };
+              porMes[km].c[prod(v)] += v.cantidad;
+              porMes[km].p += v.cantidad * v.precio;
+              if (esPendiente(v)) porMes[km].pend += v.cantidad * v.precio;
+            });
+            const tabla = tablaResumen("Resumen por mes", porMes, k => {
+              const [y, m] = k.split("-").map(Number);
+              const meses = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+              return meses[m - 1] + " " + y;
+            });
+            lista.appendChild(tabla);
+
             const porDia = {};
             ventas.slice().sort((a, b) => b.ts - a.ts).forEach(v => {
               const k = claveDia(v.ts);
@@ -1047,6 +1546,145 @@ jobs:
             $("avisoPrecio").textContent = "Precios guardados.";
           };
 
+          // ===================== RESPALDO Y EXCEL =====================
+          // la parte de Android (MainActivity) abre la ventana para elegir donde guardar o que archivo abrir
+          const hayAndroid = typeof window.Android !== "undefined";
+          let guardandoQue = "";
+
+          function fechaArchivo() {
+            const d = new Date();
+            return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+          }
+          function mostrarUltimoRespaldo() {
+            let ult = 0;
+            try { ult = Number(localStorage.getItem("cb_ultimoRespaldo") || 0); } catch (e) {}
+            $("ultimoRespaldo").textContent = ult
+              ? "Último respaldo: " + new Date(ult).toLocaleDateString("es-CL", { day: "numeric", month: "long", year: "numeric" })
+              : "Todavía no has guardado ningún respaldo.";
+            return ult;
+          }
+
+          $("btnRespaldo").onclick = () => {
+            const datos = { app: "contador-bidones-poseidon", version: 6, fecha: Date.now(), clientes: clientes, ventas: ventas, precios: precios };
+            guardandoQue = "respaldo";
+            $("avisoRespaldo").textContent = "Elige dónde guardar el respaldo (Drive o el teléfono)...";
+            Android.guardarArchivo("respaldo-bidones-" + fechaArchivo() + ".json", "application/json", JSON.stringify(datos));
+          };
+
+          $("btnRecuperar").onclick = () => {
+            guardandoQue = "";
+            $("avisoRespaldo").textContent = "Elige el archivo de respaldo...";
+            Android.abrirArchivo();
+          };
+
+          function csvCampo(x) {
+            const t = String(x === undefined || x === null ? "" : x);
+            return /[";\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
+          }
+          $("btnExcel").onclick = () => {
+            const filas = [["Fecha", "Hora", "Cliente", "Dirección", "Teléfono", "Producto", "Cantidad", "Precio unitario", "Total", "Pago", "Fecha de pago"]];
+            ventas.slice().sort((a, b) => a.ts - b.ts).forEach(v => {
+              const c = clientes.find(x => x.id === v.clienteId);
+              const d = new Date(v.ts);
+              filas.push([
+                d.toLocaleDateString("es-CL"),
+                d.toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" }),
+                c ? nombreDe(c) : (v.nombreBorrado || "Cliente borrado"),
+                c ? c.direccion : "",
+                c ? (c.telefono || "") : "",
+                PRODUCTOS[prod(v)].nombre,
+                v.cantidad,
+                v.precio,
+                v.cantidad * v.precio,
+                esPendiente(v) ? "Pendiente" : (MEDIOS[v.pago] || "Pagado"),
+                v.fechaPago ? new Date(v.fechaPago).toLocaleDateString("es-CL") : ""
+              ]);
+            });
+            // punto y coma: asi lo abre bien Excel en Chile. \uFEFF para que se vean los tildes
+            const csv = "\uFEFF" + filas.map(f => f.map(csvCampo).join(";")).join("\r\n");
+            guardandoQue = "excel";
+            Android.guardarArchivo("ventas-bidones-" + fechaArchivo() + ".csv", "text/csv", csv);
+          };
+
+          // elegir un contacto de la agenda del telefono
+          $("btnContactoVenta").onclick = () => { contactoPara = "venta"; Android.elegirContacto(); };
+          function contactoElegido(nombre, numero) {
+            if (contactoPara === "editar") {
+              if ($("edTelefono")) $("edTelefono").value = numero;
+              if ($("edNombre") && !$("edNombre").value.trim()) $("edNombre").value = nombre;
+            } else {
+              $("telefono").value = numero;
+              if (!$("nombre").value.trim() && nombre) {
+                $("nombre").value = nombre;
+                revisarCliente("nombre");
+              }
+            }
+            contactoPara = "";
+          }
+          function contactoCancelado() {
+            contactoPara = "";
+          }
+
+          // respuestas que manda la parte de Android
+          function archivoGuardado() {
+            if (guardandoQue === "respaldo") {
+              try { localStorage.setItem("cb_ultimoRespaldo", String(Date.now())); } catch (e) {}
+              mostrarUltimoRespaldo();
+              $("avisoRespaldo").textContent = "Respaldo guardado.";
+            } else {
+              $("avisoRespaldo").textContent = "Archivo de Excel guardado.";
+            }
+            guardandoQue = "";
+          }
+          function archivoCancelado() {
+            $("avisoRespaldo").textContent = "";
+            guardandoQue = "";
+          }
+          function archivoError() {
+            $("avisoRespaldo").textContent = "No se pudo guardar o leer el archivo. Intenta de nuevo y elige otra carpeta.";
+            guardandoQue = "";
+          }
+          function recibirArchivo(texto) {
+            let datos = null;
+            try { datos = JSON.parse(texto); } catch (e) {}
+            if (!datos || !Array.isArray(datos.clientes) || !Array.isArray(datos.ventas)) {
+              $("avisoRespaldo").textContent = "Ese archivo no es un respaldo de esta app. Elige el archivo respaldo-bidones-....json";
+              return;
+            }
+            respaldoPorRecuperar = datos;
+            $("avisoRespaldo").textContent = "";
+            const caja = $("confirmarRecuperar");
+            caja.innerHTML = "";
+            const box = document.createElement("div");
+            box.className = "caja confirmar";
+            const p = document.createElement("p");
+            const fecha = datos.fecha ? new Date(datos.fecha).toLocaleDateString("es-CL", { day: "numeric", month: "long", year: "numeric" }) : "fecha desconocida";
+            p.textContent = "Respaldo del " + fecha + ": " + datos.clientes.length + " clientes y " + datos.ventas.length + " ventas. Esto REEMPLAZA todo lo que hay ahora en la app. ¿Seguro?";
+            box.appendChild(p);
+            const fila = document.createElement("div");
+            fila.className = "fila-btns";
+            const si = document.createElement("button");
+            si.type = "button"; si.className = "btn btn-rojo"; si.textContent = "Sí, recuperar";
+            si.onclick = () => {
+              clientes = respaldoPorRecuperar.clientes;
+              ventas = respaldoPorRecuperar.ventas;
+              if (respaldoPorRecuperar.precios) ORDEN.forEach(k => { precios[k] = Number(respaldoPorRecuperar.precios[k]) || 0; });
+              respaldoPorRecuperar = null;
+              guardar();
+              ORDEN.forEach(k => { $("precio_" + k).value = precios[k] || ""; });
+              elegirProducto(productoElegido);
+              caja.innerHTML = "";
+              $("avisoRespaldo").textContent = "Datos recuperados: " + clientes.length + " clientes y " + ventas.length + " ventas.";
+              todo();
+            };
+            const no = document.createElement("button");
+            no.type = "button"; no.className = "btn-sec2"; no.textContent = "Cancelar";
+            no.onclick = () => { respaldoPorRecuperar = null; caja.innerHTML = ""; };
+            fila.appendChild(si); fila.appendChild(no);
+            box.appendChild(fila);
+            caja.appendChild(box);
+          }
+
           // ===================== PESTAÑAS =====================
           document.querySelectorAll(".tabs button").forEach(b => {
             b.onclick = () => {
@@ -1054,6 +1692,7 @@ jobs:
               ["venta", "clientes", "historial", "ajustes"].forEach(t => { $("tab-" + t).hidden = t !== b.dataset.tab; });
               borrarPendiente = null;
               cobrando = null;
+              editandoCliente = null; borrandoCliente = null;
               if (b.dataset.tab !== "clientes") clienteAbierto = null;
               todo();
             };
@@ -1073,8 +1712,17 @@ jobs:
           ORDEN.forEach(p => { $("precio_" + p).value = precios[p] || ""; });
           elegirProducto("b20");
           todo();
+          if (!hayAndroid) {
+            // abierto fuera de la app (navegador): no hay como guardar archivos
+            $("cajaRespaldo").hidden = true;
+            $("cajaExcel").hidden = true;
+            $("btnContactoVenta").hidden = true;
+          }
+          const ultimo = mostrarUltimoRespaldo();
           if (!precios.b20) {
             $("avisoVenta").textContent = "Consejo: guarda los precios en Ajustes para que aparezcan solos.";
+          } else if (hayAndroid && ventas.length > 0 && Date.now() - ultimo > 7 * 86400000) {
+            $("avisoVenta").textContent = "Recuerda guardar un respaldo en Ajustes (hace más de una semana que no se hace).";
           }
           </script>
           </body>
