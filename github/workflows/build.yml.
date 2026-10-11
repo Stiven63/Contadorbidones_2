@@ -1,0 +1,1212 @@
+name: Construir APK
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Crear archivos de la app
+        run: |
+          cat > settings.gradle <<'FIN_ARCHIVO'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+
+          rootProject.name = "ContadorBidones"
+          include ':app'
+          FIN_ARCHIVO
+          cat > build.gradle <<'FIN_ARCHIVO'
+          // archivo principal del proyecto
+          plugins {
+              id 'com.android.application' version '8.5.2' apply false
+          }
+          FIN_ARCHIVO
+          cat > gradle.properties <<'FIN_ARCHIVO'
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          android.nonTransitiveRClass=true
+          FIN_ARCHIVO
+          mkdir -p app
+          cat > app/build.gradle <<'FIN_ARCHIVO'
+          plugins {
+              id 'com.android.application'
+          }
+
+          android {
+              namespace 'cl.bidones.contador'
+              compileSdk 34
+
+              defaultConfig {
+                  applicationId "cl.bidones.contador"
+                  minSdk 26
+                  targetSdk 34
+                  versionCode 5
+                  versionName "5.0"
+              }
+
+              // clave fija para firmar: asi cada version nueva se instala encima sin borrar los datos
+              signingConfigs {
+                  fija {
+                      storeFile file("clave.jks")
+                      storePassword "bidones123"
+                      keyAlias "bidones"
+                      keyPassword "bidones123"
+                  }
+              }
+
+              buildTypes {
+                  debug {
+                      signingConfig signingConfigs.fija
+                  }
+                  release {
+                      minifyEnabled false
+                      signingConfig signingConfigs.fija
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+          }
+
+          // no usa librerias externas, todo es con lo que trae Android
+          dependencies {
+          }
+          FIN_ARCHIVO
+          mkdir -p app/src/main
+          cat > app/src/main/AndroidManifest.xml <<'FIN_ARCHIVO'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <application
+                  android:allowBackup="true"
+                  android:icon="@mipmap/ic_launcher"
+                  android:roundIcon="@mipmap/ic_launcher"
+                  android:label="@string/app_name"
+                  android:theme="@style/TemaBidones">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:screenOrientation="portrait"
+                      android:windowSoftInputMode="adjustResize">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+              </application>
+
+          </manifest>
+          FIN_ARCHIVO
+          mkdir -p app/src/main/java/cl/bidones/contador
+          cat > app/src/main/java/cl/bidones/contador/MainActivity.java <<'FIN_ARCHIVO'
+          package cl.bidones.contador;
+
+          import android.app.Activity;
+          import android.os.Bundle;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+
+          public class MainActivity extends Activity {
+
+              private WebView web;
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+
+                  web = new WebView(this);
+
+                  // activar javascript y el guardado local (localStorage)
+                  WebSettings config = web.getSettings();
+                  config.setJavaScriptEnabled(true);
+                  config.setDomStorageEnabled(true);
+
+                  // para que todo se abra dentro de la app y no en el navegador
+                  web.setWebViewClient(new WebViewClient());
+
+                  setContentView(web);
+
+                  // la pantalla esta en app/src/main/assets/index.html
+                  web.loadUrl("file:///android_asset/index.html");
+              }
+
+              @Override
+              public void onBackPressed() {
+                  if (web.canGoBack()) {
+                      web.goBack();
+                  } else {
+                      super.onBackPressed();
+                  }
+              }
+          }
+          FIN_ARCHIVO
+          mkdir -p app/src/main/assets
+          cat > app/src/main/assets/index.html <<'FIN_ARCHIVO'
+          <!doctype html>
+          <html lang="es">
+          <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+          <title>Contador de Bidones Poseidon</title>
+          <style>
+          /* una columna tipo app: resumen arriba, pestañas, contenido de cada pestaña */
+          :root {
+            --bg: #eef5f7;
+            --card: #ffffff;
+            --fg: #0f2a36;
+            --muted: #557583;
+            --line: #d3e3e9;
+            --agua: #0b6e99;
+            --agua-txt: #ffffff;
+            --agua-suave: #d6ecf4;
+            --peligro: #b3261e;
+            --ok: #1d7a4a;
+            --fuente: system-ui, "Roboto", sans-serif;
+          }
+          @media (prefers-color-scheme: dark) {
+            :root {
+              --bg: #0a1a21; --card: #11262f; --fg: #e3f1f6; --muted: #8fb0bd;
+              --line: #21404c; --agua: #4fb8e3; --agua-txt: #06202b; --agua-suave: #15384a;
+              --peligro: #ff8a80; --ok: #6fd39b;
+              color-scheme: dark;
+            }
+          }
+          * { box-sizing: border-box; }
+          [hidden] { display: none !important; }
+          html, body { margin: 0; }
+          body {
+            background: var(--bg); color: var(--fg);
+            font-family: var(--fuente); font-size: 17px; line-height: 1.4;
+          }
+          .app { max-width: 480px; margin: 0 auto; padding: 16px 16px 40px; display: flex; flex-direction: column; gap: 14px; }
+
+          header h1 { margin: 0; font-size: 1.3rem; font-weight: 800; }
+          header p { margin: 2px 0 0; color: var(--muted); font-size: 0.9rem; }
+
+          .resumen {
+            background: var(--agua); color: var(--agua-txt);
+            border-radius: 18px; padding: 16px 18px;
+            display: grid; grid-template-columns: 1fr 1fr; gap: 10px 16px;
+          }
+          .resumen .lbl { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; opacity: 0.85; }
+          .resumen .big { font-size: 1.9rem; font-weight: 800; line-height: 1.1; font-variant-numeric: tabular-nums; }
+          .resumen .sub { font-size: 1rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+          .tabs {
+            display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px;
+            background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 4px;
+            position: sticky; top: 0; z-index: 5;
+          }
+          .tabs button {
+            border: 0; background: transparent; color: var(--muted);
+            padding: 10px 2px; border-radius: 10px; font-size: 0.88rem; font-weight: 700; cursor: pointer;
+            font-family: var(--fuente);
+          }
+          .tabs button.activo { background: var(--agua-suave); color: var(--fg); }
+
+          .panel { display: flex; flex-direction: column; gap: 12px; }
+          .caja {
+            background: var(--card); border: 1px solid var(--line);
+            border-radius: 16px; padding: 16px; display: flex; flex-direction: column; gap: 12px;
+          }
+          h2 { margin: 0; font-size: 1.1rem; }
+          label { display: flex; flex-direction: column; gap: 4px; font-size: 0.9rem; color: var(--muted); font-weight: 700; }
+          input[type=text], input[type=number], input[type=search] {
+            height: 50px; padding: 0 12px; font-size: 1.05rem; font-family: var(--fuente);
+            border: 1px solid var(--line); border-radius: 12px; background: var(--bg); color: var(--fg); width: 100%;
+          }
+          .fila2 { display: grid; grid-template-columns: 1fr; gap: 12px; }
+          .stepper { display: flex; gap: 8px; }
+          .stepper button {
+            width: 50px; height: 50px; flex: none; border-radius: 12px; border: 1px solid var(--line);
+            background: var(--agua-suave); color: var(--fg); font-size: 1.5rem; font-weight: 700; cursor: pointer;
+          }
+          .stepper input { text-align: center; font-weight: 800; font-size: 1.3rem; min-width: 0; flex: 1; padding: 0 4px; }
+          .cliente-ok { font-size: 0.88rem; color: var(--ok); font-weight: 700; min-height: 1.2em; margin-top: -6px; }
+          .total-venta {
+            display: flex; justify-content: space-between; align-items: baseline;
+            background: var(--agua-suave); border-radius: 12px; padding: 12px 14px;
+          }
+          .total-venta b { font-size: 1.6rem; font-variant-numeric: tabular-nums; }
+          .btn {
+            height: 54px; border: 0; border-radius: 14px; background: var(--agua); color: var(--agua-txt);
+            font-size: 1.1rem; font-weight: 800; cursor: pointer; font-family: var(--fuente);
+          }
+          .btn-sec {
+            border: 1px solid var(--line); background: transparent; color: var(--fg);
+            border-radius: 10px; padding: 8px 12px; font-size: 0.9rem; cursor: pointer; font-family: var(--fuente);
+          }
+          .btn-sec.peligro { color: var(--peligro); border-color: var(--peligro); font-weight: 700; }
+          button:focus-visible, input:focus-visible { outline: 3px solid var(--agua); outline-offset: 2px; }
+          .aviso { margin: 0; font-size: 0.92rem; color: var(--muted); min-height: 1.2em; }
+
+          .cliente {
+            background: var(--card); border: 1px solid var(--line); border-radius: 16px; overflow: hidden;
+          }
+          .cliente-cab {
+            width: 100%; border: 0; background: transparent; color: var(--fg); text-align: left; cursor: pointer;
+            padding: 14px 16px; display: flex; justify-content: space-between; gap: 10px; font-family: var(--fuente);
+          }
+          .cliente-cab .nom { font-weight: 800; font-size: 1.02rem; }
+          .cliente-cab .dir { color: var(--muted); font-size: 0.88rem; }
+          .cliente-cab .tot { text-align: right; font-variant-numeric: tabular-nums; max-width: 55%; }
+          .cliente-cab .tot b { display: block; font-size: 1.05rem; }
+          .cliente-cab .tot span { color: var(--muted); font-size: 0.85rem; display: block; }
+          .cliente-det { border-top: 1px solid var(--line); }
+
+          .dia { background: var(--card); border: 1px solid var(--line); border-radius: 16px; overflow: hidden; }
+          .dia-cab {
+            display: flex; justify-content: space-between; gap: 8px; padding: 12px 16px;
+            background: var(--agua-suave); font-weight: 700;
+          }
+          .dia-cab span:last-child { font-variant-numeric: tabular-nums; white-space: nowrap; }
+          .mov {
+            display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-top: 1px solid var(--line);
+          }
+          .mov .info { flex: 1; min-width: 0; }
+          .mov .info .quien { font-weight: 700; overflow-wrap: anywhere; }
+          .mov .info .det { color: var(--muted); font-size: 0.88rem; font-variant-numeric: tabular-nums; }
+          .mov .monto { font-weight: 800; font-variant-numeric: tabular-nums; white-space: nowrap; }
+          .ficha-cab { background: var(--agua); color: var(--agua-txt); border-radius: 18px; padding: 16px 18px; display: flex; flex-direction: column; gap: 2px; }
+          .ficha-cab .nom { font-size: 1.3rem; font-weight: 800; overflow-wrap: anywhere; }
+          .ficha-cab .dir { opacity: 0.85; font-size: 0.95rem; }
+          .ficha-tots { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 12px; }
+          .ficha-prod { margin-top: 8px; font-size: 0.92rem; font-weight: 700; }
+          .ficha-tots span { display: block; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.85; }
+          .ficha-tots b { font-size: 1.25rem; font-variant-numeric: tabular-nums; }
+          .tabla-scroll { overflow-x: auto; }
+          .resumen-tabla { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 0.88rem; }
+          .resumen-tabla th { text-align: right; color: var(--muted); font-size: 0.78rem; font-weight: 700; padding: 8px 6px; }
+          .resumen-tabla td { text-align: right; padding: 9px 6px; border-top: 1px solid var(--line); white-space: nowrap; }
+          .resumen-tabla th:first-child, .resumen-tabla td:first-child { text-align: left; padding-left: 14px; }
+          .resumen-tabla th:last-child, .resumen-tabla td:last-child { padding-right: 14px; }
+          .resumen-tabla td:last-child { font-weight: 800; }
+          .resumen-pie {
+            grid-column: 1 / -1; border-top: 1px solid rgba(255,255,255,0.3); padding-top: 10px;
+            display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+          }
+          .resumen-pie b { display: block; font-size: 1.3rem; font-variant-numeric: tabular-nums; }
+          .medios { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+          .medios .lbl { grid-column: 1 / -1; }
+          .medios div { font-size: 0.78rem; opacity: 0.9; }
+          .medios b { display: block; font-size: 1rem; opacity: 1; font-variant-numeric: tabular-nums; }
+          .pago-lbl { font-size: 0.9rem; color: var(--muted); font-weight: 700; }
+          .chips { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 4px; }
+          .chip {
+            height: 46px; border-radius: 12px; border: 1px solid var(--line); background: var(--bg); color: var(--fg);
+            font-size: 0.98rem; font-weight: 700; cursor: pointer; font-family: var(--fuente);
+          }
+          .chip.activo { background: var(--agua); border-color: var(--agua); color: var(--agua-txt); }
+          .chip.pend.activo { background: var(--peligro); border-color: var(--peligro); color: #fff; }
+          .etiqueta { display: inline-block; font-size: 0.75rem; font-weight: 800; padding: 2px 8px; border-radius: 999px; margin-top: 3px; background: var(--agua-suave); color: var(--fg); }
+          .etiqueta.pend { background: var(--peligro); color: #fff; }
+          .acciones { display: flex; flex-direction: column; gap: 6px; align-items: stretch; }
+          .btn-sec.cobrar { background: var(--ok); border-color: var(--ok); color: #fff; font-weight: 700; }
+          .cobro { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 16px 14px; background: var(--agua-suave); }
+          .cobro p { margin: 0; width: 100%; font-size: 0.88rem; font-weight: 700; }
+          .cobro .chip { flex: 1 1 30%; height: 42px; }
+          .debe { color: var(--peligro); font-weight: 800; font-size: 0.85rem; }
+          .ficha-debe { margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.3); display: flex; justify-content: space-between; align-items: baseline; }
+          .ficha-debe b { font-size: 1.3rem; font-variant-numeric: tabular-nums; }
+          .caja-cobro { border-radius: 16px; overflow: hidden; border: 1px solid var(--line); }
+          .vendido { grid-column: 1 / -1; width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 0.9rem; }
+          .vendido th { text-align: right; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.85; font-weight: 700; padding: 0 0 6px 6px; }
+          .vendido td { text-align: right; padding: 5px 0 5px 6px; border-top: 1px solid rgba(255,255,255,0.2); white-space: nowrap; }
+          .vendido th:first-child, .vendido td:first-child { text-align: left; padding-left: 0; white-space: normal; }
+          .vendido td.n { font-size: 1.15rem; font-weight: 800; }
+          .vendido tr.suma td { font-weight: 800; border-top: 2px solid rgba(255,255,255,0.5); }
+          .btn-otro { align-self: flex-start; }
+          .vacio { text-align: center; color: var(--muted); padding: 22px 16px; border: 1px dashed var(--line); border-radius: 16px; }
+          </style>
+          </head>
+          <body>
+          <div class="app">
+            <header>
+              <h1>Contador de Bidones Poseidon</h1>
+              <p id="fechaHoy"></p>
+            </header>
+
+            <section class="resumen">
+              <table class="vendido">
+                <thead><tr><th>Vendido</th><th>Hoy</th><th>$ hoy</th><th>Total</th></tr></thead>
+                <tbody id="tablaVendido"></tbody>
+              </table>
+              <div class="resumen-pie">
+                <div><span class="lbl">Por cobrar (pendientes)</span><b id="porCobrar">$0</b></div>
+                <div><span class="lbl">Vendido en total</span><b id="totPlata">$0</b></div>
+              </div>
+              <div class="medios">
+                <span class="lbl">Cobrado hoy</span>
+                <div>Efectivo<b id="hoyEfectivo">$0</b></div>
+                <div>Transferencia<b id="hoyTransf">$0</b></div>
+                <div>Tarjeta<b id="hoyTarjeta">$0</b></div>
+              </div>
+            </section>
+
+            <nav class="tabs">
+              <button type="button" data-tab="venta" class="activo">Venta</button>
+              <button type="button" data-tab="clientes">Clientes</button>
+              <button type="button" data-tab="historial">Historial</button>
+              <button type="button" data-tab="ajustes">Ajustes</button>
+            </nav>
+
+            <!-- NUEVA VENTA -->
+            <section class="panel" id="tab-venta">
+              <div class="caja">
+                <h2>Nueva venta</h2>
+                <label>Nombre del cliente
+                  <input type="text" id="nombre" list="listaNombres" autocomplete="off" placeholder="Ej: Don Juan">
+                </label>
+                <label>Dirección
+                  <input type="text" id="direccion" list="listaDirecciones" autocomplete="off" placeholder="Ej: Los Aromos 123">
+                </label>
+                <div class="cliente-ok" id="clienteOk"></div>
+                <datalist id="listaNombres"></datalist>
+                <datalist id="listaDirecciones"></datalist>
+
+                <div>
+                  <span class="pago-lbl">¿Qué vendió?</span>
+                  <div class="chips" id="chipsProducto">
+                    <button type="button" class="chip activo" data-prod="b20">Bidón 20 L</button>
+                    <button type="button" class="chip" data-prod="b10">Bidón 10 L</button>
+                    <button type="button" class="chip" data-prod="dusb">Dispensador USB</button>
+                    <button type="button" class="chip" data-prod="dbas">Dispensador básico</button>
+                  </div>
+                </div>
+
+                <div class="fila2">
+                  <label><span id="lblCantidad">Cantidad</span>
+                    <div class="stepper">
+                      <button type="button" id="menos" aria-label="Restar uno">−</button>
+                      <input type="number" id="cantidad" inputmode="numeric" min="1" value="1">
+                      <button type="button" id="mas" aria-label="Sumar uno">+</button>
+                    </div>
+                  </label>
+                  <label><span id="lblPrecio">Precio del bidón de 20 litros (CLP)</span>
+                    <input type="number" id="precio" inputmode="numeric" min="0">
+                  </label>
+                </div>
+
+                <div class="total-venta">
+                  <span>Total a cobrar</span>
+                  <b id="totalVenta">$0</b>
+                </div>
+
+                <div>
+                  <span class="pago-lbl">¿Cómo pagó?</span>
+                  <div class="chips" id="chipsPago">
+                    <button type="button" class="chip activo" data-pago="efectivo">Efectivo</button>
+                    <button type="button" class="chip" data-pago="transferencia">Transferencia</button>
+                    <button type="button" class="chip" data-pago="tarjeta">Tarjeta</button>
+                    <button type="button" class="chip pend" data-pago="pendiente">Pendiente</button>
+                  </div>
+                </div>
+
+                <button type="button" class="btn" id="btnGuardar">Guardar venta</button>
+                <p class="aviso" id="avisoVenta"></p>
+                <button type="button" class="btn-sec btn-otro" id="btnOtro" hidden>+ Otro producto al mismo cliente</button>
+              </div>
+            </section>
+
+            <!-- CLIENTES -->
+            <section class="panel" id="tab-clientes" hidden>
+              <input type="search" id="buscar" placeholder="Buscar por nombre o dirección">
+              <div id="listaClientes" class="panel"></div>
+            </section>
+
+            <!-- HISTORIAL -->
+            <section class="panel" id="tab-historial" hidden>
+              <div id="listaHistorial" class="panel"></div>
+            </section>
+
+            <!-- AJUSTES -->
+            <section class="panel" id="tab-ajustes" hidden>
+              <div class="caja">
+                <h2>Precios (CLP)</h2>
+                <p class="aviso">El precio aparece solo al elegir el producto en una venta.</p>
+                <label>Precio del bidón de 20 litros
+                  <input type="number" id="precio_b20" inputmode="numeric" min="0">
+                </label>
+                <label>Precio del bidón de 10 litros
+                  <input type="number" id="precio_b10" inputmode="numeric" min="0">
+                </label>
+                <label>Precio del dispensador USB
+                  <input type="number" id="precio_dusb" inputmode="numeric" min="0">
+                </label>
+                <label>Precio del dispensador básico
+                  <input type="number" id="precio_dbas" inputmode="numeric" min="0">
+                </label>
+                <button type="button" class="btn" id="btnPrecio">Guardar precios</button>
+                <p class="aviso" id="avisoPrecio"></p>
+              </div>
+              <div class="caja">
+                <h2>Importante</h2>
+                <p class="aviso">Los datos se guardan en este teléfono. Si se desinstala la app, se borran. Para actualizarla, instala la versión nueva encima.</p>
+              </div>
+            </section>
+          </div>
+
+          <script>
+          // ===================== DATOS =====================
+          let clientes = [];   // { id, nombre, direccion }
+          let ventas = [];     // { id, clienteId, producto, cantidad, precio, ts, pago, fechaPago }
+
+          // productos que vende
+          const PRODUCTOS = {
+            b20:  { nombre: "Bidón 20 L",         corto: "bid. 20 L",    precioTxt: "Precio del bidón de 20 litros" },
+            b10:  { nombre: "Bidón 10 L",         corto: "bid. 10 L",    precioTxt: "Precio del bidón de 10 litros" },
+            dusb: { nombre: "Dispensador USB",    corto: "disp. USB",    precioTxt: "Precio del dispensador USB" },
+            dbas: { nombre: "Dispensador básico", corto: "disp. básico", precioTxt: "Precio del dispensador básico" }
+          };
+          const ORDEN = ["b20", "b10", "dusb", "dbas"];
+          let precios = { b20: 0, b10: 0, dusb: 0, dbas: 0 };
+          let productoElegido = "b20";
+          let ultimoCliente = null;
+          let borrarPendiente = null;
+          let pagoElegido = "efectivo";
+          let cobrando = null;   // id de la venta que se esta cobrando, o "todo:" + id del cliente
+          const MEDIOS = { efectivo: "Efectivo", transferencia: "Transferencia", tarjeta: "Tarjeta", pendiente: "Pendiente" };
+          let clienteAbierto = null;
+
+          const $ = (id) => document.getElementById(id);
+
+          function cargar() {
+            try {
+              clientes = JSON.parse(localStorage.getItem("cb_clientes") || "[]");
+              ventas = JSON.parse(localStorage.getItem("cb_ventas") || "[]");
+              const guardados = JSON.parse(localStorage.getItem("cb_precios") || "null");
+              if (guardados) {
+                ORDEN.forEach(p => { precios[p] = Number(guardados[p]) || 0; });
+              } else {
+                // version anterior: un solo precio, que era el del bidon de 20
+                precios.b20 = Number(localStorage.getItem("cb_precio") || 0);
+              }
+
+              // pasar los registros de la version anterior (solo contador) si existen
+              const viejos = JSON.parse(localStorage.getItem("bidones") || "[]");
+              if (viejos.length > 0 && ventas.length === 0) {
+                const c = { id: "c" + Date.now(), nombre: "Sin cliente", direccion: "" };
+                clientes.push(c);
+                viejos.forEach(v => ventas.push({ id: "v" + v.ts + Math.random().toString(36).slice(2, 6), clienteId: c.id, cantidad: v.cantidad, precio: 0, ts: v.ts }));
+                localStorage.removeItem("bidones");
+                guardar();
+              }
+            } catch (e) {
+              clientes = []; ventas = [];
+            }
+          }
+
+          function guardar() {
+            try {
+              localStorage.setItem("cb_clientes", JSON.stringify(clientes));
+              localStorage.setItem("cb_ventas", JSON.stringify(ventas));
+              localStorage.setItem("cb_precios", JSON.stringify(precios));
+            } catch (e) {}
+          }
+
+          // ===================== AYUDAS =====================
+          // pesos chilenos, sin decimales: $12.500
+          function plata(n) {
+            return "$" + Math.round(n).toLocaleString("es-CL");
+          }
+          function esPendiente(v) {
+            return v.pago === "pendiente";
+          }
+          // las ventas antiguas no tenian producto: eran bidones de 20
+          function prod(v) {
+            return PRODUCTOS[v.producto] ? v.producto : "b20";
+          }
+          function cuentaVacia() {
+            return { b20: 0, b10: 0, dusb: 0, dbas: 0 };
+          }
+          // ej: "15 bid. 20 L · 2 disp. USB"
+          function textoUnidades(cuenta) {
+            const partes = ORDEN.filter(p => cuenta[p] > 0).map(p => cuenta[p] + " " + PRODUCTOS[p].corto);
+            return partes.length ? partes.join(" · ") : "sin compras";
+          }
+          function claveDia(ts) {
+            const d = new Date(ts);
+            return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+          }
+          function normal(txt) {
+            return (txt || "").trim().toLowerCase();
+          }
+          function nombreDe(c) {
+            if (!c) return "Cliente borrado";
+            return c.nombre || c.direccion || "Sin nombre";
+          }
+          function buscarCliente(nombre, direccion) {
+            const n = normal(nombre), d = normal(direccion);
+            if (n) {
+              const porNombre = clientes.find(c => normal(c.nombre) === n);
+              if (porNombre) return porNombre;
+            }
+            if (d) {
+              const porDir = clientes.find(c => normal(c.direccion) === d);
+              if (porDir) return porDir;
+            }
+            return null;
+          }
+          function totalesCliente(id) {
+            let b = 0, p = 0, ultimo = 0, deuda = 0;
+            const porProd = cuentaVacia();
+            ventas.forEach(v => {
+              if (v.clienteId === id) {
+                b += v.cantidad; p += v.cantidad * v.precio;
+                porProd[prod(v)] += v.cantidad;
+                if (esPendiente(v)) deuda += v.cantidad * v.precio;
+                if (v.ts > ultimo) ultimo = v.ts;
+              }
+            });
+            return { unidades: b, plata: p, ultimo: ultimo, deuda: deuda, porProd: porProd };
+          }
+
+          // marca ventas como pagadas con el medio que se elija en ese momento
+          function cobrar(lista, medio) {
+            const ahora = Date.now();
+            lista.forEach(v => { v.pago = medio; v.fechaPago = ahora; });
+            cobrando = null;
+            guardar();
+            todo();
+          }
+
+          function opcionesCobro(texto) {
+            const caja = document.createElement("div");
+            caja.className = "cobro";
+            caja.innerHTML = "<p></p>";
+            caja.querySelector("p").textContent = texto;
+            return caja;
+          }
+          function botonesCobro(caja, alElegir) {
+            ["efectivo", "transferencia", "tarjeta"].forEach(m => {
+              const b = document.createElement("button");
+              b.type = "button"; b.className = "chip"; b.textContent = MEDIOS[m];
+              b.onclick = (e) => { e.stopPropagation(); alElegir(m); };
+              caja.appendChild(b);
+            });
+            const cancelar = document.createElement("button");
+            cancelar.type = "button"; cancelar.className = "btn-sec"; cancelar.textContent = "Cancelar";
+            cancelar.onclick = (e) => { e.stopPropagation(); cobrando = null; todo(); };
+            caja.appendChild(cancelar);
+          }
+          function nombreDia(clave) {
+            if (clave === claveDia(Date.now())) return "Hoy";
+            if (clave === claveDia(Date.now() - 86400000)) return "Ayer";
+            const [y, m, d] = clave.split("-").map(Number);
+            const txt = new Date(y, m - 1, d).toLocaleDateString("es-CL", { weekday: "long", day: "numeric", month: "short", year: "numeric" });
+            return txt.charAt(0).toUpperCase() + txt.slice(1);
+          }
+
+          // ===================== RESUMEN =====================
+          function dibujarResumen() {
+            const hoy = claveDia(Date.now());
+            const hoyCant = cuentaVacia(), hoyPlata = cuentaVacia(), totCant = cuentaVacia();
+            let tp = 0;
+            ventas.forEach(v => {
+              const p = prod(v);
+              totCant[p] += v.cantidad;
+              tp += v.cantidad * v.precio;
+              if (claveDia(v.ts) === hoy) { hoyCant[p] += v.cantidad; hoyPlata[p] += v.cantidad * v.precio; }
+            });
+
+            // tabla: cada producto vendido hoy, plata de hoy y total acumulado
+            const tabla = $("tablaVendido");
+            tabla.innerHTML = "";
+            let sh = 0, sp = 0, st = 0;
+            ORDEN.forEach(p => {
+              const tr = document.createElement("tr");
+              tr.innerHTML = '<td></td><td class="n"></td><td></td><td></td>';
+              const td = tr.querySelectorAll("td");
+              td[0].textContent = PRODUCTOS[p].nombre;
+              td[1].textContent = hoyCant[p];
+              td[2].textContent = plata(hoyPlata[p]);
+              td[3].textContent = totCant[p];
+              tabla.appendChild(tr);
+              sh += hoyCant[p]; sp += hoyPlata[p]; st += totCant[p];
+            });
+            const suma = document.createElement("tr");
+            suma.className = "suma";
+            suma.innerHTML = '<td>Total</td><td class="n"></td><td></td><td></td>';
+            const tds = suma.querySelectorAll("td");
+            tds[1].textContent = sh; tds[2].textContent = plata(sp); tds[3].textContent = st;
+            tabla.appendChild(suma);
+            $("totPlata").textContent = plata(tp);
+
+            // lo que falta por cobrar y lo cobrado hoy por medio de pago
+            let deuda = 0;
+            const hoyMedio = { efectivo: 0, transferencia: 0, tarjeta: 0 };
+            ventas.forEach(v => {
+              const monto = v.cantidad * v.precio;
+              if (esPendiente(v)) { deuda += monto; return; }
+              const fp = v.fechaPago || v.ts;
+              if (claveDia(fp) === hoy && hoyMedio[v.pago] !== undefined) hoyMedio[v.pago] += monto;
+            });
+            $("porCobrar").textContent = plata(deuda);
+            $("hoyEfectivo").textContent = plata(hoyMedio.efectivo);
+            $("hoyTransf").textContent = plata(hoyMedio.transferencia);
+            $("hoyTarjeta").textContent = plata(hoyMedio.tarjeta);
+          }
+
+          // ===================== VENTA =====================
+          function llenarSugerencias() {
+            $("listaNombres").innerHTML = "";
+            $("listaDirecciones").innerHTML = "";
+            clientes.forEach(c => {
+              if (c.nombre) { const o = document.createElement("option"); o.value = c.nombre; $("listaNombres").appendChild(o); }
+              if (c.direccion) { const o = document.createElement("option"); o.value = c.direccion; $("listaDirecciones").appendChild(o); }
+            });
+          }
+
+          function revisarCliente(desde) {
+            const c = buscarCliente(
+              desde === "nombre" ? $("nombre").value : "",
+              desde === "direccion" ? $("direccion").value : ""
+            );
+            if (c) {
+              if (desde === "nombre" && c.direccion && !$("direccion").value.trim()) $("direccion").value = c.direccion;
+              if (desde === "direccion" && c.nombre && !$("nombre").value.trim()) $("nombre").value = c.nombre;
+              const t = totalesCliente(c.id);
+              $("clienteOk").textContent = "Cliente registrado: lleva " + textoUnidades(t.porProd) + " (" + plata(t.plata) + ")" + (t.deuda > 0 ? " · DEBE " + plata(t.deuda) : "");
+            } else if ($("nombre").value.trim() || $("direccion").value.trim()) {
+              $("clienteOk").textContent = "Cliente nuevo: se guardará al registrar la venta";
+            } else {
+              $("clienteOk").textContent = "";
+            }
+          }
+
+          function calcularTotal() {
+            const cant = parseInt($("cantidad").value, 10) || 0;
+            const precio = parseInt($("precio").value, 10) || 0;
+            $("totalVenta").textContent = plata(cant * precio);
+          }
+
+          document.querySelectorAll("#chipsPago .chip").forEach(b => {
+            b.onclick = () => {
+              pagoElegido = b.dataset.pago;
+              document.querySelectorAll("#chipsPago .chip").forEach(x => x.classList.toggle("activo", x === b));
+            };
+          });
+          // al elegir producto cambia el texto y se pone su precio
+          function elegirProducto(p) {
+            productoElegido = p;
+            document.querySelectorAll("#chipsProducto .chip").forEach(x => x.classList.toggle("activo", x.dataset.prod === p));
+            $("lblPrecio").textContent = PRODUCTOS[p].precioTxt + " (CLP)";
+            $("lblCantidad").textContent = "Cantidad (" + PRODUCTOS[p].nombre + ")";
+            $("precio").value = precios[p] || "";
+            calcularTotal();
+          }
+          document.querySelectorAll("#chipsProducto .chip").forEach(b => {
+            b.onclick = () => elegirProducto(b.dataset.prod);
+          });
+
+          function elegirPago(medio) {
+            pagoElegido = medio;
+            document.querySelectorAll("#chipsPago .chip").forEach(x => x.classList.toggle("activo", x.dataset.pago === medio));
+          }
+
+          // para vender otra cosa al cliente recien guardado (ej: bidones y un dispensador)
+          $("btnOtro").onclick = () => {
+            const c = clientes.find(x => x.id === ultimoCliente);
+            if (!c) return;
+            $("nombre").value = c.nombre; $("direccion").value = c.direccion;
+            revisarCliente("nombre");
+            $("btnOtro").hidden = true;
+            $("avisoVenta").textContent = "";
+          };
+
+          $("nombre").addEventListener("input", () => { $("btnOtro").hidden = true; revisarCliente("nombre"); });
+          $("direccion").addEventListener("input", () => revisarCliente("direccion"));
+          $("cantidad").addEventListener("input", calcularTotal);
+          $("precio").addEventListener("input", calcularTotal);
+          $("menos").onclick = () => { $("cantidad").value = Math.max(1, (parseInt($("cantidad").value, 10) || 1) - 1); calcularTotal(); };
+          $("mas").onclick = () => { $("cantidad").value = (parseInt($("cantidad").value, 10) || 0) + 1; calcularTotal(); };
+
+          $("btnGuardar").onclick = () => {
+            const nombre = $("nombre").value.trim();
+            const direccion = $("direccion").value.trim();
+            const cant = parseInt($("cantidad").value, 10) || 0;
+            const precio = parseInt($("precio").value, 10);
+
+            if (!nombre && !direccion) { $("avisoVenta").textContent = "Escribe el nombre o la dirección del cliente."; return; }
+            if (cant < 1) { $("avisoVenta").textContent = "La cantidad tiene que ser 1 o más."; return; }
+            if (isNaN(precio) || precio < 0) { $("avisoVenta").textContent = "Escribe el " + PRODUCTOS[productoElegido].precioTxt.toLowerCase() + "."; return; }
+
+            let c = buscarCliente(nombre, direccion);
+            if (!c) {
+              c = { id: "c" + Date.now(), nombre: nombre, direccion: direccion };
+              clientes.push(c);
+            } else {
+              // si faltaba algun dato del cliente, se completa
+              if (!c.nombre && nombre) c.nombre = nombre;
+              if (direccion && normal(c.direccion) !== normal(direccion)) c.direccion = direccion;
+            }
+
+            const ahora = Date.now();
+            ventas.push({
+              id: "v" + ahora, clienteId: c.id, producto: productoElegido, cantidad: cant, precio: precio, ts: ahora,
+              pago: pagoElegido, fechaPago: pagoElegido === "pendiente" ? null : ahora
+            });
+            guardar();
+
+            const t = totalesCliente(c.id);
+            $("avisoVenta").textContent = "Guardado: " + cant + " " + PRODUCTOS[productoElegido].nombre + " a " + nombreDe(c) + " por " + plata(cant * precio) + " (" + MEDIOS[pagoElegido] + "). En total lleva " + textoUnidades(t.porProd) + " (" + plata(t.plata) + ")" + (t.deuda > 0 ? " y debe " + plata(t.deuda) : "") + ".";
+
+            ultimoCliente = c.id;
+            $("btnOtro").hidden = false;
+            $("nombre").value = ""; $("direccion").value = ""; $("cantidad").value = 1;
+            $("clienteOk").textContent = "";
+            elegirProducto("b20");
+            elegirPago("efectivo");
+            calcularTotal();
+            todo();
+          };
+
+          // ===================== CLIENTES =====================
+          function filaVenta(v, mostrarCliente) {
+            const cont = document.createElement("div");
+            const fila = document.createElement("div");
+            fila.className = "mov";
+            cont.appendChild(fila);
+            const c = clientes.find(x => x.id === v.clienteId);
+            const hora = new Date(v.ts).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" });
+            const fecha = new Date(v.ts).toLocaleDateString("es-CL", { day: "numeric", month: "short", year: "numeric" });
+
+            fila.innerHTML = '<div class="info"><div class="quien"></div><div class="det"></div><span class="etiqueta"></span></div><span class="monto"></span><div class="acciones"></div>';
+            fila.querySelector(".quien").textContent = mostrarCliente ? nombreDe(c) : fecha;
+            fila.querySelector(".det").textContent = hora + " · " + v.cantidad + " " + PRODUCTOS[prod(v)].nombre + " a " + plata(v.precio);
+            fila.querySelector(".monto").textContent = plata(v.cantidad * v.precio);
+
+            const etq = fila.querySelector(".etiqueta");
+            if (esPendiente(v)) {
+              etq.textContent = "Pendiente de pago";
+              etq.classList.add("pend");
+            } else if (v.pago) {
+              let txt = MEDIOS[v.pago] || "Pagado";
+              if (v.fechaPago && claveDia(v.fechaPago) !== claveDia(v.ts)) {
+                txt += " · pagó el " + new Date(v.fechaPago).toLocaleDateString("es-CL", { day: "numeric", month: "short" });
+              }
+              etq.textContent = txt;
+            } else {
+              etq.textContent = "Pagado";
+            }
+
+            const acc = fila.querySelector(".acciones");
+            if (esPendiente(v)) {
+              const bc = document.createElement("button");
+              bc.type = "button"; bc.className = "btn-sec cobrar"; bc.textContent = "Cobrar";
+              bc.onclick = (e) => { e.stopPropagation(); cobrando = v.id; borrarPendiente = null; todo(); };
+              acc.appendChild(bc);
+            }
+            const btn = document.createElement("button");
+            btn.type = "button"; btn.className = "btn-sec";
+            if (borrarPendiente === v.id) {
+              btn.textContent = "¿Borrar?";
+              btn.classList.add("peligro");
+              btn.onclick = (e) => { e.stopPropagation(); ventas = ventas.filter(x => x.id !== v.id); borrarPendiente = null; guardar(); todo(); };
+            } else {
+              btn.textContent = "Borrar";
+              btn.onclick = (e) => { e.stopPropagation(); borrarPendiente = v.id; cobrando = null; todo(); };
+            }
+            acc.appendChild(btn);
+
+            if (cobrando === v.id) {
+              const caja = opcionesCobro("¿Cómo pagó " + plata(v.cantidad * v.precio) + "?");
+              botonesCobro(caja, (m) => cobrar([v], m));
+              cont.appendChild(caja);
+            }
+            return cont;
+          }
+
+          function dibujarClientes() {
+            const lista = $("listaClientes");
+            lista.innerHTML = "";
+
+            // si hay un cliente abierto se muestra su ficha completa
+            if (clienteAbierto && clientes.find(c => c.id === clienteAbierto)) {
+              $("buscar").hidden = true;
+              dibujarFicha(lista, clientes.find(c => c.id === clienteAbierto));
+              return;
+            }
+            clienteAbierto = null;
+            $("buscar").hidden = false;
+            const q = normal($("buscar").value);
+
+            const datos = clientes
+              .filter(c => !q || normal(c.nombre).includes(q) || normal(c.direccion).includes(q))
+              .map(c => ({ c: c, t: totalesCliente(c.id) }))
+              .sort((a, b) => b.t.ultimo - a.t.ultimo);
+
+            if (datos.length === 0) {
+              lista.innerHTML = '<div class="vacio">' + (q ? "No hay clientes con esa búsqueda." : "Todavía no hay clientes.<br>Se agregan solos al guardar una venta.") + '</div>';
+              return;
+            }
+
+            datos.forEach(({ c, t }) => {
+              const caja = document.createElement("div");
+              caja.className = "cliente";
+              caja.innerHTML = '<button type="button" class="cliente-cab"><div><div class="nom"></div><div class="dir"></div></div><div class="tot"><b></b><span></span></div></button>';
+              caja.querySelector(".nom").textContent = nombreDe(c);
+              caja.querySelector(".dir").textContent = c.nombre ? (c.direccion || "Sin dirección") : "";
+              caja.querySelector(".tot b").textContent = plata(t.plata);
+              caja.querySelector(".tot span").textContent = textoUnidades(t.porProd) + " ›";
+              if (t.deuda > 0) {
+                const d = document.createElement("div");
+                d.className = "debe";
+                d.textContent = "Debe " + plata(t.deuda);
+                caja.querySelector(".tot").appendChild(d);
+              }
+              caja.querySelector(".cliente-cab").onclick = () => { clienteAbierto = c.id; borrarPendiente = null; dibujarClientes(); window.scrollTo(0, 0); };
+              lista.appendChild(caja);
+            });
+          }
+
+          // ficha del cliente: totales, resumen por mes y por año, y cada pedido
+          function dibujarFicha(lista, c) {
+            const susVentas = ventas.filter(v => v.clienteId === c.id).sort((a, b) => b.ts - a.ts);
+            const t = totalesCliente(c.id);
+
+            const volver = document.createElement("button");
+            volver.type = "button";
+            volver.className = "btn-sec";
+            volver.textContent = "‹ Volver a clientes";
+            volver.style.alignSelf = "flex-start";
+            volver.onclick = () => { clienteAbierto = null; borrarPendiente = null; cobrando = null; dibujarClientes(); };
+            lista.appendChild(volver);
+
+            // cabecera con totales
+            const cab = document.createElement("div");
+            cab.className = "ficha-cab";
+            cab.innerHTML = '<div class="nom"></div><div class="dir"></div>' +
+              '<div class="ficha-tots"><div><span>Pedidos</span><b class="p"></b></div><div><span>Total $</span><b class="m"></b></div></div><div class="ficha-prod"></div>';
+            cab.querySelector(".nom").textContent = nombreDe(c);
+            cab.querySelector(".dir").textContent = c.nombre ? (c.direccion || "Sin dirección") : "";
+            cab.querySelector(".p").textContent = susVentas.length;
+            cab.querySelector(".ficha-prod").textContent = textoUnidades(t.porProd);
+            cab.querySelector(".m").textContent = plata(t.plata);
+            const debe = document.createElement("div");
+            debe.className = "ficha-debe";
+            debe.innerHTML = "<span>Debe</span><b></b>";
+            debe.querySelector("b").textContent = t.deuda > 0 ? plata(t.deuda) : "$0 (al día)";
+            cab.appendChild(debe);
+            lista.appendChild(cab);
+
+            if (t.deuda > 0) {
+              const pend = susVentas.filter(esPendiente);
+              if (cobrando === "todo:" + c.id) {
+                const caja = opcionesCobro("¿Cómo pagó los " + plata(t.deuda) + " (" + pend.length + (pend.length === 1 ? " pedido" : " pedidos") + ")?");
+                botonesCobro(caja, (m) => cobrar(pend, m));
+                const envoltura = document.createElement("div");
+                envoltura.className = "caja-cobro";
+                envoltura.appendChild(caja);
+                lista.appendChild(envoltura);
+              } else {
+                const bt = document.createElement("button");
+                bt.type = "button"; bt.className = "btn"; bt.style.background = "var(--ok)"; bt.style.color = "#fff";
+                bt.textContent = "Cobrar todo lo que debe (" + plata(t.deuda) + ")";
+                bt.onclick = () => { cobrando = "todo:" + c.id; borrarPendiente = null; dibujarClientes(); };
+                lista.appendChild(bt);
+              }
+            }
+
+            const nueva = document.createElement("button");
+            nueva.type = "button";
+            nueva.className = "btn";
+            nueva.textContent = "+ Nueva venta a este cliente";
+            nueva.onclick = () => {
+              $("nombre").value = c.nombre; $("direccion").value = c.direccion;
+              document.querySelector('.tabs button[data-tab="venta"]').click();
+              revisarCliente("nombre");
+              $("cantidad").focus();
+            };
+            lista.appendChild(nueva);
+
+            if (susVentas.length === 0) {
+              const v = document.createElement("div");
+              v.className = "vacio";
+              v.textContent = "Este cliente todavía no tiene pedidos.";
+              lista.appendChild(v);
+              return;
+            }
+
+            // resumen por año y por mes
+            const porMes = {}, porAnio = {};
+            susVentas.forEach(v => {
+              const d = new Date(v.ts);
+              const km = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
+              const ka = String(d.getFullYear());
+              if (!porMes[km]) porMes[km] = { c: cuentaVacia(), p: 0 };
+              if (!porAnio[ka]) porAnio[ka] = { c: cuentaVacia(), p: 0 };
+              porMes[km].c[prod(v)] += v.cantidad; porMes[km].p += v.cantidad * v.precio;
+              porAnio[ka].c[prod(v)] += v.cantidad; porAnio[ka].p += v.cantidad * v.precio;
+            });
+
+            lista.appendChild(tablaResumen("Por año", porAnio, k => "Año " + k));
+            lista.appendChild(tablaResumen("Por mes", porMes, k => {
+              const [y, m] = k.split("-").map(Number);
+              const meses = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+              return meses[m - 1] + " " + y;
+            }));
+
+            // todos los pedidos
+            const caja = document.createElement("div");
+            caja.className = "dia";
+            caja.innerHTML = '<div class="dia-cab"><span>Todos los pedidos</span><span></span></div>';
+            caja.querySelector(".dia-cab span:last-child").textContent = susVentas.length + (susVentas.length === 1 ? " pedido" : " pedidos");
+            susVentas.forEach(v => caja.appendChild(filaVenta(v, false)));
+            lista.appendChild(caja);
+          }
+
+          function tablaResumen(titulo, datos, nombreClave) {
+            const caja = document.createElement("div");
+            caja.className = "dia";
+            caja.innerHTML = '<div class="dia-cab"><span></span><span></span></div><div class="tabla-scroll"><table class="resumen-tabla"><thead><tr><th></th><th>20 L</th><th>10 L</th><th>Disp.</th><th>Total</th></tr></thead><tbody></tbody></table></div>';
+            caja.querySelector(".dia-cab span:first-child").textContent = titulo;
+            const cuerpo = caja.querySelector("tbody");
+            Object.keys(datos).sort().reverse().forEach(k => {
+              const tr = document.createElement("tr");
+              tr.innerHTML = "<td></td><td></td><td></td><td></td><td></td>";
+              const tds = tr.querySelectorAll("td");
+              const c = datos[k].c;
+              tds[0].textContent = nombreClave(k);
+              tds[1].textContent = c.b20;
+              tds[2].textContent = c.b10;
+              tds[3].textContent = c.dusb + c.dbas;
+              tds[4].textContent = plata(datos[k].p);
+              cuerpo.appendChild(tr);
+            });
+            return caja;
+          }
+          $("buscar").addEventListener("input", dibujarClientes);
+
+          // ===================== HISTORIAL =====================
+          function dibujarHistorial() {
+            const lista = $("listaHistorial");
+            lista.innerHTML = "";
+            if (ventas.length === 0) {
+              lista.innerHTML = '<div class="vacio">Todavía no hay ventas registradas.</div>';
+              return;
+            }
+            const porDia = {};
+            ventas.slice().sort((a, b) => b.ts - a.ts).forEach(v => {
+              const k = claveDia(v.ts);
+              if (!porDia[k]) porDia[k] = [];
+              porDia[k].push(v);
+            });
+            Object.keys(porDia).sort().reverse().forEach(k => {
+              const items = porDia[k];
+              let b = 0, p = 0;
+              items.forEach(v => { b += v.cantidad; p += v.cantidad * v.precio; });
+              const caja = document.createElement("div");
+              caja.className = "dia";
+              caja.innerHTML = '<div class="dia-cab"><span></span><span></span></div>';
+              caja.querySelector(".dia-cab span:first-child").textContent = nombreDia(k);
+              caja.querySelector(".dia-cab span:last-child").textContent = b + " unid. · " + plata(p);
+              items.forEach(v => caja.appendChild(filaVenta(v, true)));
+              lista.appendChild(caja);
+            });
+          }
+
+          // ===================== AJUSTES =====================
+          $("btnPrecio").onclick = () => {
+            for (const p of ORDEN) {
+              const txt = $("precio_" + p).value.trim();
+              const n = txt === "" ? 0 : parseInt(txt, 10);
+              if (isNaN(n) || n < 0) { $("avisoPrecio").textContent = "Revisa el " + PRODUCTOS[p].precioTxt.toLowerCase() + "."; return; }
+              precios[p] = n;
+            }
+            guardar();
+            elegirProducto(productoElegido);
+            $("avisoPrecio").textContent = "Precios guardados.";
+          };
+
+          // ===================== PESTAÑAS =====================
+          document.querySelectorAll(".tabs button").forEach(b => {
+            b.onclick = () => {
+              document.querySelectorAll(".tabs button").forEach(x => x.classList.toggle("activo", x === b));
+              ["venta", "clientes", "historial", "ajustes"].forEach(t => { $("tab-" + t).hidden = t !== b.dataset.tab; });
+              borrarPendiente = null;
+              cobrando = null;
+              if (b.dataset.tab !== "clientes") clienteAbierto = null;
+              todo();
+            };
+          });
+
+          // ===================== INICIO =====================
+          function todo() {
+            dibujarResumen();
+            llenarSugerencias();
+            dibujarClientes();
+            dibujarHistorial();
+          }
+
+          const textoFecha = new Date().toLocaleDateString("es-CL", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+          $("fechaHoy").textContent = textoFecha.charAt(0).toUpperCase() + textoFecha.slice(1);
+          cargar();
+          ORDEN.forEach(p => { $("precio_" + p).value = precios[p] || ""; });
+          elegirProducto("b20");
+          todo();
+          if (!precios.b20) {
+            $("avisoVenta").textContent = "Consejo: guarda los precios en Ajustes para que aparezcan solos.";
+          }
+          </script>
+          </body>
+          </html>
+          FIN_ARCHIVO
+          mkdir -p app/src/main/res/values
+          cat > app/src/main/res/values/strings.xml <<'FIN_ARCHIVO'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="app_name">Contador de Bidones Poseidon</string>
+          </resources>
+          FIN_ARCHIVO
+          mkdir -p app/src/main/res/values
+          cat > app/src/main/res/values/styles.xml <<'FIN_ARCHIVO'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="TemaBidones" parent="android:Theme.Material.Light.NoActionBar">
+                  <item name="android:statusBarColor">#0B6E99</item>
+                  <item name="android:navigationBarColor">#EEF5F7</item>
+                  <item name="android:windowBackground">@android:color/white</item>
+              </style>
+          </resources>
+          FIN_ARCHIVO
+          mkdir -p app/src/main/res/mipmap-anydpi-v26
+          cat > app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml <<'FIN_ARCHIVO'
+          <?xml version="1.0" encoding="utf-8"?>
+          <!-- icono: bidon con la etiqueta Poseidon -->
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@drawable/ic_fondo" />
+              <foreground android:drawable="@drawable/ic_bidon" />
+          </adaptive-icon>
+          FIN_ARCHIVO
+          mkdir -p app/src/main/res/drawable
+          cat > app/src/main/res/drawable/ic_fondo.xml <<'FIN_ARCHIVO'
+          <?xml version="1.0" encoding="utf-8"?>
+          <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+              <solid android:color="#0B3E5C" />
+          </shape>
+          FIN_ARCHIVO
+          mkdir -p app/src/main/res/drawable
+          cat > app/src/main/res/drawable/ic_bidon.xml <<'FIN_ARCHIVO'
+          <?xml version="1.0" encoding="utf-8"?>
+          <!-- icono: bidon de agua con la etiqueta Poseidon (108x108, zona segura al centro) -->
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp"
+              android:height="108dp"
+              android:viewportWidth="108"
+              android:viewportHeight="108">
+
+              <!-- se achica un poco para que entre completo en el circulo del telefono -->
+              <group
+                  android:pivotX="54"
+                  android:pivotY="54"
+                  android:scaleX="0.8"
+                  android:scaleY="0.8"
+                  android:translateY="2.4">
+
+              <!-- cuerpo del bidon (azul claro) -->
+              <path android:fillColor="#9ED8F2" android:pathData="M36,30h36c4,0 7,3 7,7v41c0,4 -3,7 -7,7h-36c-4,0 -7,-3 -7,-7v-41c0,-4 3,-7 7,-7z" />
+
+              <!-- agua -->
+              <path android:fillColor="#2E9FD6" android:pathData="M29,66c8,-4 17,4 25,0c8,-4 17,4 25,0v12c0,4 -3,7 -7,7h-36c-4,0 -7,-3 -7,-7z" />
+
+              <!-- brillo -->
+              <path android:fillColor="#E6F6FD" android:pathData="M34,37h4v26h-4z" />
+
+              <!-- cuello y tapa -->
+              <path android:fillColor="#9ED8F2" android:pathData="M46,24h16v7h-16z" />
+              <path android:fillColor="#111111" android:pathData="M44,17h20v8h-20z" />
+
+              <!-- etiqueta negra -->
+              <path android:fillColor="#0D1418" android:pathData="M29,49h50v17h-50z" />
+
+              <!-- texto Poseidon -->
+              <path android:fillColor="#3FD0F5" android:pathData="M33 60.95 33.09 60.4H33.87L34.86 54.75H34.08L34.18 54.21H37.63Q38.64 54.21 39.14 54.74Q39.65 55.28 39.49 56.18Q39.33 57.08 38.64 57.62Q37.95 58.16 36.94 58.16H35.82L35.43 60.4H36.41L36.32 60.95ZM35.92 57.61H36.38Q36.9 57.61 37.29 57.22Q37.67 56.83 37.78 56.18Q37.9 55.53 37.65 55.14Q37.41 54.75 36.88 54.75H36.42ZM41.87 60.57Q42.33 60.57 42.59 60.13Q42.85 59.7 43.05 58.54Q43.19 57.79 43.19 57.34Q43.19 57.11 43.14 56.96Q43.04 56.53 42.58 56.53Q42.12 56.53 41.86 56.96Q41.6 57.4 41.39 58.54Q41.27 59.28 41.27 59.73Q41.27 59.98 41.3 60.13Q41.42 60.57 41.87 60.57ZM40.11 60.4Q39.73 59.92 39.73 59.17Q39.73 58.88 39.79 58.54Q40 57.36 40.76 56.69Q41.53 56.02 42.67 56.02Q43.81 56.02 44.35 56.69Q44.72 57.17 44.72 57.92Q44.72 58.21 44.67 58.54Q44.46 59.73 43.69 60.4Q42.92 61.08 41.78 61.08Q40.64 61.08 40.11 60.4ZM45.22 59.47H45.69Q45.68 59.53 45.68 59.6Q45.68 60.04 45.92 60.3Q46.16 60.57 46.64 60.57Q47.59 60.57 47.7 59.91Q47.72 59.83 47.72 59.7Q47.72 59.58 47.62 59.44Q47.51 59.31 47.11 59.19L46.54 59.02Q45.91 58.84 45.7 58.54Q45.5 58.25 45.5 57.89Q45.5 57.74 45.53 57.56Q45.67 56.78 46.22 56.4Q46.77 56.02 47.66 56.02Q48.55 56.02 49.51 56.31L49.3 57.52H48.84Q48.85 57.43 48.85 57.35Q48.85 56.53 47.93 56.53Q47.01 56.53 46.9 57.14Q46.89 57.21 46.89 57.31Q46.89 57.61 47.39 57.75L47.95 57.92Q48.76 58.16 48.98 58.46Q49.21 58.76 49.21 59.15Q49.21 59.31 49.17 59.49Q49.03 60.3 48.44 60.69Q47.86 61.08 46.75 61.08Q45.96 61.08 44.99 60.81ZM53.17 57.19Q53.17 56.53 52.66 56.53Q52.28 56.53 52.05 56.93Q51.82 57.34 51.62 58.6Q51.62 58.6 51.71 58.6Q52.95 58.6 53.14 57.51Q53.17 57.34 53.17 57.19ZM51.52 59.14Q51.49 59.29 51.49 59.61Q51.5 60.57 52.33 60.57Q52.8 60.57 53.14 60.29Q53.47 60.02 53.64 59.49H54.32Q54 60.31 53.41 60.69Q52.82 61.08 51.89 61.08Q50.77 61.08 50.29 60.42Q49.95 59.96 49.95 59.24Q49.95 58.92 50.02 58.56Q50.23 57.35 50.96 56.69Q51.69 56.02 52.76 56.02Q53.53 56.02 54.07 56.35Q54.61 56.69 54.61 57.3Q54.61 57.42 54.58 57.55Q54.33 59.01 51.52 59.14ZM56.19 54.79Q56.25 54.42 56.52 54.17Q56.8 53.92 57.13 53.92Q57.45 53.92 57.63 54.18Q57.76 54.36 57.76 54.61Q57.76 54.7 57.74 54.79Q57.68 55.15 57.41 55.4Q57.14 55.65 56.82 55.65Q56.49 55.65 56.31 55.4Q56.17 55.21 56.17 54.97Q56.17 54.88 56.19 54.79ZM56.78 60.4H57.4L57.3 60.95H55.25L55.99 56.69H55.38L55.47 56.15H57.52ZM61.47 58.78 61.55 58.31Q61.63 57.86 61.63 57.55Q61.63 57.27 61.57 57.1Q61.44 56.72 61.01 56.72Q60.56 56.72 60.32 57.12Q60.07 57.51 59.89 58.54Q59.77 59.18 59.77 59.57Q59.77 59.82 59.82 59.98Q59.93 60.37 60.37 60.37Q60.8 60.37 61.06 60Q61.32 59.62 61.47 58.78ZM63.75 53.92 62.53 60.95H61.09L61.2 60.34Q60.95 60.71 60.6 60.89Q60.26 61.08 59.81 61.08Q58.89 61.08 58.48 60.4Q58.21 59.95 58.21 59.28Q58.21 58.94 58.28 58.54Q58.49 57.36 59.13 56.69Q59.77 56.02 60.69 56.02Q61.15 56.02 61.43 56.2Q61.71 56.38 61.82 56.76L62.22 54.47H61.61L61.7 53.92ZM66.36 60.57Q66.81 60.57 67.08 60.13Q67.34 59.7 67.54 58.54Q67.67 57.79 67.67 57.34Q67.67 57.11 67.63 56.96Q67.53 56.53 67.07 56.53Q66.61 56.53 66.34 56.96Q66.08 57.4 65.88 58.54Q65.75 59.28 65.75 59.73Q65.75 59.98 65.79 60.13Q65.9 60.57 66.36 60.57ZM64.6 60.4Q64.22 59.92 64.22 59.17Q64.22 58.88 64.28 58.54Q64.49 57.36 65.25 56.69Q66.02 56.02 67.16 56.02Q68.3 56.02 68.83 56.69Q69.21 57.17 69.21 57.92Q69.21 58.21 69.15 58.54Q68.94 59.73 68.18 60.4Q67.41 61.08 66.27 61.08Q65.13 61.08 64.6 60.4ZM69.95 60.95 70.69 56.69H70.08L70.17 56.15H72.22L72.11 56.83Q72.44 56.4 72.81 56.21Q73.17 56.02 73.68 56.02Q74.41 56.02 74.7 56.5Q74.88 56.8 74.88 57.29Q74.88 57.56 74.82 57.89L74.39 60.4H75L74.91 60.95H72.85L73.39 57.85Q73.45 57.53 73.45 57.32Q73.45 57.12 73.4 57Q73.3 56.77 72.96 56.77Q72.52 56.77 72.26 57.12Q71.99 57.48 71.86 58.25L71.39 60.95Z" />
+              </group>
+          </vector>
+          FIN_ARCHIVO
+          mkdir -p app
+          base64 -di > app/clave.jks <<'FIN_ARCHIVO'
+          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
+          FIN_ARCHIVO
+
+      - name: Compilar
+        run: gradle assembleDebug
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ContadorBidones-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
