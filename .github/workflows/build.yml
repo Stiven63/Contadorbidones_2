@@ -63,8 +63,8 @@ jobs:
                   applicationId "cl.bidones.contador"
                   minSdk 26
                   targetSdk 34
-                  versionCode 7
-                  versionName "7.0"
+                  versionCode 9
+                  versionName "9.0"
               }
 
               // clave fija para firmar: asi cada version nueva se instala encima sin borrar los datos
@@ -104,6 +104,8 @@ jobs:
 
               <!-- para que el boton Llamar llame directo (se pide permiso la primera vez) -->
               <uses-permission android:name="android.permission.CALL_PHONE" />
+              <!-- para la llamada directa por WhatsApp (busca el contacto en la agenda) -->
+              <uses-permission android:name="android.permission.READ_CONTACTS" />
 
               <application
                   android:allowBackup="true"
@@ -144,6 +146,7 @@ jobs:
           import android.webkit.WebSettings;
           import android.webkit.WebView;
           import android.webkit.WebViewClient;
+          import android.widget.Toast;
 
           import org.json.JSONObject;
 
@@ -157,10 +160,12 @@ jobs:
               private static final int ABRIR = 2;
               private static final int CONTACTO = 3;
               private static final int PERMISO_LLAMAR = 10;
+              private static final int PERMISO_CONTACTOS = 11;
 
               private WebView web;
               private String contenidoPorGuardar = null;
               private Uri numeroPorLlamar = null;
+              private String whatsappPorLlamar = null;
 
               @Override
               protected void onCreate(Bundle savedInstanceState) {
@@ -184,6 +189,9 @@ jobs:
                           }
                           if ("tel".equals(tipo)) {
                               llamar(url);
+                          } else if ("wa.me".equals(url.getHost()) && "1".equals(url.getQueryParameter("llamar"))) {
+                              String numero = url.getPath() == null ? "" : url.getPath().replace("/", "");
+                              llamarWhatsApp(numero);
                           } else if ("wa.me".equals(url.getHost())) {
                               abrirWhatsApp(url);
                           } else {
@@ -226,6 +234,17 @@ jobs:
               @Override
               public void onRequestPermissionsResult(int pedido, String[] permisos, int[] resultados) {
                   super.onRequestPermissionsResult(pedido, permisos, resultados);
+                  if (pedido == PERMISO_CONTACTOS && whatsappPorLlamar != null) {
+                      String numero = whatsappPorLlamar;
+                      whatsappPorLlamar = null;
+                      if (resultados.length > 0 && resultados[0] == PackageManager.PERMISSION_GRANTED) {
+                          llamarWhatsApp(numero);
+                      } else {
+                          avisar("Sin permiso de contactos no se puede llamar directo. Se abre el chat.");
+                          abrirWhatsApp(Uri.parse("https://wa.me/" + numero));
+                      }
+                      return;
+                  }
                   if (pedido == PERMISO_LLAMAR && numeroPorLlamar != null) {
                       Uri numero = numeroPorLlamar;
                       numeroPorLlamar = null;
@@ -237,14 +256,68 @@ jobs:
                   }
               }
 
+              private void avisar(String texto) {
+                  Toast.makeText(this, texto, Toast.LENGTH_LONG).show();
+              }
+
+              // llamada de voz por WhatsApp.
+              // WhatsApp guarda en los contactos del telefono una opcion "llamada de voz" por cada contacto que tiene WhatsApp.
+              // Se busca esa opcion con el numero y se abre: asi la llamada sale sola.
+              // Si el numero no esta guardado en los contactos, se abre el chat.
+              private void llamarWhatsApp(String numero) {
+                  if (checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
+                      whatsappPorLlamar = numero;
+                      requestPermissions(new String[]{Manifest.permission.READ_CONTACTS}, PERMISO_CONTACTOS);
+                      return;
+                  }
+                  // se compara con los ultimos 8 digitos para no fallar por el +56 o el 9 de adelante
+                  String fin = numero.length() > 8 ? numero.substring(numero.length() - 8) : numero;
+                  String[] tipos = {
+                      "vnd.android.cursor.item/vnd.com.whatsapp.voip.call",
+                      "vnd.android.cursor.item/vnd.com.whatsapp.w4b.voip.call"
+                  };
+                  String[] paquetes = {"com.whatsapp", "com.whatsapp.w4b"};
+
+                  for (int k = 0; k < tipos.length; k++) {
+                      Cursor fila = null;
+                      try {
+                          fila = getContentResolver().query(
+                              ContactsContract.Data.CONTENT_URI,
+                              new String[]{ContactsContract.Data._ID},
+                              ContactsContract.Data.MIMETYPE + " = ? AND " + ContactsContract.Data.DATA1 + " LIKE ?",
+                              new String[]{tipos[k], "%" + fin + "@%"},
+                              null);
+                          if (fila != null && fila.moveToFirst()) {
+                              long id = fila.getLong(0);
+                              fila.close();
+                              fila = null;
+                              Intent llamada = new Intent(Intent.ACTION_VIEW);
+                              llamada.setDataAndType(Uri.parse("content://com.android.contacts/data/" + id), tipos[k]);
+                              llamada.setPackage(paquetes[k]);
+                              if (abrir(llamada)) return;
+                          }
+                      } catch (Exception e) {
+                          // seguir con la otra opcion
+                      } finally {
+                          if (fila != null) fila.close();
+                      }
+                  }
+                  avisar("Guarda este número en los contactos del teléfono para llamar directo por WhatsApp. Por ahora se abre el chat.");
+                  abrirWhatsApp(Uri.parse("https://wa.me/" + numero));
+              }
+
               // primero intenta WhatsApp normal, despues WhatsApp Business, y si no hay ninguno el navegador
               private void abrirWhatsApp(Uri url) {
                   String numero = url.getPath() == null ? "" : url.getPath().replace("/", "");
                   String texto = url.getQueryParameter("text");
-                  String direccion = "https://api.whatsapp.com/send?phone=" + numero;
+                  // sin numero (ej: cierre del dia) WhatsApp pregunta a quien mandarlo
+                  String direccion = "https://api.whatsapp.com/send?";
+                  if (numero.length() > 0) {
+                      direccion += "phone=" + numero + "&";
+                  }
                   if (texto != null && texto.length() > 0) {
                       // el mensaje queda escrito en el chat; el que envia es la persona
-                      direccion += "&text=" + Uri.encode(texto);
+                      direccion += "text=" + Uri.encode(texto);
                   }
                   Uri directo = Uri.parse(direccion);
                   Intent normal = new Intent(Intent.ACTION_VIEW, directo);
@@ -580,6 +653,34 @@ jobs:
           .tel-fila { display: flex; gap: 8px; }
           .tel-fila input { flex: 1; min-width: 0; }
           .tel-fila button { flex: none; height: 50px; padding: 0 12px; }
+          .carrito { display: flex; flex-direction: column; gap: 6px; }
+          .grupo-lbl { font-size: 0.78rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin-top: 6px; }
+          .item {
+            display: grid; grid-template-columns: 1fr auto; gap: 6px 10px; align-items: center;
+            border: 1px solid var(--line); border-radius: 12px; padding: 8px 10px; background: var(--bg);
+          }
+          .item.con { border-color: var(--agua); background: var(--agua-suave); }
+          .item .nom-prod { font-weight: 800; font-size: 0.98rem; }
+          .item .precio-cu { display: flex; align-items: center; gap: 4px; font-size: 0.82rem; color: var(--muted); }
+          .item .precio-cu input { width: 92px; height: 34px; font-size: 0.95rem; padding: 0 8px; }
+          .item .paso { display: flex; align-items: center; gap: 6px; grid-row: span 2; }
+          .item .paso button {
+            width: 42px; height: 42px; border-radius: 10px; border: 1px solid var(--line); background: var(--card);
+            color: var(--fg); font-size: 1.4rem; font-weight: 700; cursor: pointer;
+          }
+          .item .paso input { width: 52px; height: 42px; text-align: center; font-size: 1.15rem; font-weight: 800; padding: 0; }
+          .item .sub-item { font-size: 0.82rem; font-weight: 700; color: var(--fg); min-height: 1em; }
+          .detalle-total { font-size: 0.85rem; color: var(--muted); margin-top: 4px; }
+          .mov.pedido { flex-wrap: wrap; }
+          .lineas { flex-basis: 100%; order: 3; font-size: 0.88rem; color: var(--fg); font-variant-numeric: tabular-nums;
+            border-top: 1px dashed var(--line); padding-top: 6px; display: flex; flex-direction: column; gap: 2px; }
+          .lineas div { display: flex; justify-content: space-between; gap: 8px; }
+          .lineas span:first-child { color: var(--muted); }
+          .cierre p { margin: 0; white-space: pre-line; font-size: 0.92rem; font-variant-numeric: tabular-nums; }
+          .wsp-btn {
+            display: flex; align-items: center; justify-content: center; height: 48px; border-radius: 12px;
+            background: #1f9d55; color: #fff; text-decoration: none; font-weight: 800; font-size: 1rem;
+          }
           .vacio { text-align: center; color: var(--muted); padding: 22px 16px; border: 1px dashed var(--line); border-radius: 16px; }
           </style>
           </head>
@@ -635,31 +736,16 @@ jobs:
                 <datalist id="listaDirecciones"></datalist>
 
                 <div>
-                  <span class="pago-lbl">¿Qué vendió?</span>
-                  <div class="chips" id="chipsProducto">
-                    <button type="button" class="chip activo" data-prod="b20">Bidón 20 L</button>
-                    <button type="button" class="chip" data-prod="b10">Bidón 10 L</button>
-                    <button type="button" class="chip" data-prod="dusb">Dispensador USB</button>
-                    <button type="button" class="chip" data-prod="dbas">Dispensador básico</button>
+                  <span class="pago-lbl">¿Qué vendió? (puede elegir varios)</span>
+                  <div class="carrito" id="carrito"></div>
+                </div>
+
+                <div>
+                  <div class="total-venta">
+                    <span>Total a cobrar</span>
+                    <b id="totalVenta">$0</b>
                   </div>
-                </div>
-
-                <div class="fila2">
-                  <label><span id="lblCantidad">Cantidad</span>
-                    <div class="stepper">
-                      <button type="button" id="menos" aria-label="Restar uno">−</button>
-                      <input type="number" id="cantidad" inputmode="numeric" min="1" value="1">
-                      <button type="button" id="mas" aria-label="Sumar uno">+</button>
-                    </div>
-                  </label>
-                  <label><span id="lblPrecio">Precio del bidón de 20 litros (CLP)</span>
-                    <input type="number" id="precio" inputmode="numeric" min="0">
-                  </label>
-                </div>
-
-                <div class="total-venta">
-                  <span>Total a cobrar</span>
-                  <b id="totalVenta">$0</b>
+                  <div class="detalle-total" id="detalleTotal"></div>
                 </div>
 
                 <div>
@@ -674,7 +760,7 @@ jobs:
 
                 <button type="button" class="btn" id="btnGuardar">Guardar venta</button>
                 <p class="aviso" id="avisoVenta"></p>
-                <button type="button" class="btn-sec btn-otro" id="btnOtro" hidden>+ Otro producto al mismo cliente</button>
+                <div id="trasGuardar"></div>
               </div>
             </section>
 
@@ -690,6 +776,11 @@ jobs:
 
             <!-- HISTORIAL -->
             <section class="panel" id="tab-historial" hidden>
+              <div class="caja cierre" id="cajaCierre">
+                <h2>Cierre de hoy</h2>
+                <p id="textoCierre"></p>
+                <a class="wsp-btn" id="btnCierre" href="#">Enviar cierre por WhatsApp</a>
+              </div>
               <div id="listaHistorial" class="panel"></div>
             </section>
 
@@ -697,13 +788,22 @@ jobs:
             <section class="panel" id="tab-ajustes" hidden>
               <div class="caja">
                 <h2>Precios (CLP)</h2>
-                <p class="aviso">El precio aparece solo al elegir el producto en una venta.</p>
+                <p class="aviso">Estos precios aparecen solos en cada venta (igual se pueden cambiar en la venta).</p>
+                <span class="grupo-lbl">Recarga de agua</span>
                 <label>Precio del bidón de 20 litros
                   <input type="number" id="precio_b20" inputmode="numeric" min="0">
                 </label>
                 <label>Precio del bidón de 10 litros
                   <input type="number" id="precio_b10" inputmode="numeric" min="0">
                 </label>
+                <span class="grupo-lbl">Venta de bidón nuevo</span>
+                <label>Precio del bidón nuevo de 20 litros
+                  <input type="number" id="precio_n20" inputmode="numeric" min="0">
+                </label>
+                <label>Precio del bidón nuevo de 10 litros
+                  <input type="number" id="precio_n10" inputmode="numeric" min="0">
+                </label>
+                <span class="grupo-lbl">Dispensadores</span>
                 <label>Precio del dispensador USB
                   <input type="number" id="precio_dusb" inputmode="numeric" min="0">
                 </label>
@@ -740,16 +840,25 @@ jobs:
           let ventas = [];     // { id, clienteId, producto, cantidad, precio, ts, pago, fechaPago }
 
           // productos que vende
+          // grupo: recarga (agua), nuevo (bidon nuevo con agua), disp (dispensadores)
           const PRODUCTOS = {
-            b20:  { nombre: "Bidón 20 L",         corto: "bid. 20 L",    precioTxt: "Precio del bidón de 20 litros" },
-            b10:  { nombre: "Bidón 10 L",         corto: "bid. 10 L",    precioTxt: "Precio del bidón de 10 litros" },
-            dusb: { nombre: "Dispensador USB",    corto: "disp. USB",    precioTxt: "Precio del dispensador USB" },
-            dbas: { nombre: "Dispensador básico", corto: "disp. básico", precioTxt: "Precio del dispensador básico" }
+            b20:  { nombre: "Bidón 20 L",         corto: "bid. 20 L",       grupo: "recarga", precioTxt: "Precio del bidón de 20 litros",
+                    uno: "bidón de 20 litros", varios: "bidones de 20 litros" },
+            b10:  { nombre: "Bidón 10 L",         corto: "bid. 10 L",       grupo: "recarga", precioTxt: "Precio del bidón de 10 litros",
+                    uno: "bidón de 10 litros", varios: "bidones de 10 litros" },
+            n20:  { nombre: "Bidón nuevo 20 L",   corto: "bid. nuevo 20 L", grupo: "nuevo",   precioTxt: "Precio del bidón nuevo de 20 litros",
+                    uno: "bidón nuevo de 20 litros", varios: "bidones nuevos de 20 litros" },
+            n10:  { nombre: "Bidón nuevo 10 L",   corto: "bid. nuevo 10 L", grupo: "nuevo",   precioTxt: "Precio del bidón nuevo de 10 litros",
+                    uno: "bidón nuevo de 10 litros", varios: "bidones nuevos de 10 litros" },
+            dusb: { nombre: "Dispensador USB",    corto: "disp. USB",       grupo: "disp",    precioTxt: "Precio del dispensador USB",
+                    uno: "dispensador USB", varios: "dispensadores USB" },
+            dbas: { nombre: "Dispensador básico", corto: "disp. básico",    grupo: "disp",    precioTxt: "Precio del dispensador básico",
+                    uno: "dispensador básico", varios: "dispensadores básicos" }
           };
-          const ORDEN = ["b20", "b10", "dusb", "dbas"];
-          let precios = { b20: 0, b10: 0, dusb: 0, dbas: 0 };
-          let productoElegido = "b20";
-          let ultimoCliente = null;
+          const ORDEN = ["b20", "b10", "n20", "n10", "dusb", "dbas"];
+          const GRUPOS = [["recarga", "Recarga de agua"], ["nuevo", "Venta de bidón nuevo"], ["disp", "Dispensadores"]];
+          let precios = { b20: 0, b10: 0, n20: 0, n10: 0, dusb: 0, dbas: 0 };
+          let carrito = {};   // lo que se esta vendiendo: { b20: { cant, precio }, ... }
           let borrarPendiente = null;
           let pagoElegido = "efectivo";
           let cobrando = null;   // id de la venta que se esta cobrando, o "todo:" + id del cliente
@@ -811,7 +920,30 @@ jobs:
             return PRODUCTOS[v.producto] ? v.producto : "b20";
           }
           function cuentaVacia() {
-            return { b20: 0, b10: 0, dusb: 0, dbas: 0 };
+            const c = {};
+            ORDEN.forEach(p => { c[p] = 0; });
+            return c;
+          }
+          // "3 bidones de 20 litros"
+          function nombreCant(p, n) {
+            return n + " " + (n === 1 ? PRODUCTOS[p].uno : PRODUCTOS[p].varios);
+          }
+          // junta las ventas de un mismo pedido (las antiguas no tienen pedido: cada una es su propio pedido)
+          function agruparPedidos(lista) {
+            const grupos = {};
+            const orden = [];
+            lista.forEach(v => {
+              const k = v.pedidoId || v.id;
+              if (!grupos[k]) { grupos[k] = []; orden.push(k); }
+              grupos[k].push(v);
+            });
+            return orden.map(k => grupos[k]).sort((a, b) => b[0].ts - a[0].ts);
+          }
+          function clavePedido(grupo) {
+            return grupo[0].pedidoId || grupo[0].id;
+          }
+          function totalGrupo(grupo) {
+            return grupo.reduce((s, v) => s + v.cantidad * v.precio, 0);
           }
           // ej: "15 bid. 20 L · 2 disp. USB"
           function textoUnidades(cuenta) {
@@ -976,10 +1108,62 @@ jobs:
             }
           }
 
+          // arma la lista de productos con su cantidad y precio
+          function nuevoCarrito() {
+            carrito = {};
+            ORDEN.forEach(p => { carrito[p] = { cant: 0, precio: precios[p] || 0 }; });
+            dibujarCarrito();
+          }
+
+          function dibujarCarrito() {
+            const caja = $("carrito");
+            caja.innerHTML = "";
+            GRUPOS.forEach(([grupo, titulo]) => {
+              const lbl = document.createElement("span");
+              lbl.className = "grupo-lbl";
+              lbl.textContent = titulo;
+              caja.appendChild(lbl);
+              ORDEN.filter(p => PRODUCTOS[p].grupo === grupo).forEach(p => {
+                const it = document.createElement("div");
+                it.className = "item" + (carrito[p].cant > 0 ? " con" : "");
+                it.innerHTML =
+                  '<div class="nom-prod"></div>' +
+                  '<div class="paso"><button type="button" class="menos" aria-label="Restar">−</button><input type="number" inputmode="numeric" min="0" class="cant"><button type="button" class="mas" aria-label="Sumar">+</button></div>' +
+                  '<div class="precio-cu">c/u $<input type="number" inputmode="numeric" min="0" class="pre"></div>' +
+                  '<div class="sub-item"></div>';
+                it.querySelector(".nom-prod").textContent = PRODUCTOS[p].nombre;
+                const inCant = it.querySelector(".cant");
+                const inPre = it.querySelector(".pre");
+                inCant.value = carrito[p].cant || "";
+                inCant.placeholder = "0";
+                inPre.value = carrito[p].precio || "";
+                inPre.setAttribute("aria-label", PRODUCTOS[p].precioTxt);
+                const pintar = () => {
+                  it.classList.toggle("con", carrito[p].cant > 0);
+                  it.querySelector(".sub-item").textContent = carrito[p].cant > 0 ? "= " + plata(carrito[p].cant * carrito[p].precio) : "";
+                  calcularTotal();
+                };
+                it.querySelector(".menos").onclick = () => { carrito[p].cant = Math.max(0, carrito[p].cant - 1); inCant.value = carrito[p].cant || ""; pintar(); };
+                it.querySelector(".mas").onclick = () => { carrito[p].cant += 1; inCant.value = carrito[p].cant; pintar(); };
+                inCant.oninput = () => { carrito[p].cant = Math.max(0, parseInt(inCant.value, 10) || 0); pintar(); };
+                inPre.oninput = () => { carrito[p].precio = Math.max(0, parseInt(inPre.value, 10) || 0); pintar(); };
+                caja.appendChild(it);
+                pintar();
+              });
+            });
+          }
+
           function calcularTotal() {
-            const cant = parseInt($("cantidad").value, 10) || 0;
-            const precio = parseInt($("precio").value, 10) || 0;
-            $("totalVenta").textContent = plata(cant * precio);
+            let total = 0;
+            const partes = [];
+            ORDEN.forEach(p => {
+              if (carrito[p] && carrito[p].cant > 0) {
+                total += carrito[p].cant * carrito[p].precio;
+                partes.push(nombreCant(p, carrito[p].cant));
+              }
+            });
+            $("totalVenta").textContent = plata(total);
+            $("detalleTotal").textContent = partes.join(" + ");
           }
 
           document.querySelectorAll("#chipsPago .chip").forEach(b => {
@@ -988,50 +1172,47 @@ jobs:
               document.querySelectorAll("#chipsPago .chip").forEach(x => x.classList.toggle("activo", x === b));
             };
           });
-          // al elegir producto cambia el texto y se pone su precio
-          function elegirProducto(p) {
-            productoElegido = p;
-            document.querySelectorAll("#chipsProducto .chip").forEach(x => x.classList.toggle("activo", x.dataset.prod === p));
-            $("lblPrecio").textContent = PRODUCTOS[p].precioTxt + " (CLP)";
-            $("lblCantidad").textContent = "Cantidad (" + PRODUCTOS[p].nombre + ")";
-            $("precio").value = precios[p] || "";
-            calcularTotal();
-          }
-          document.querySelectorAll("#chipsProducto .chip").forEach(b => {
-            b.onclick = () => elegirProducto(b.dataset.prod);
-          });
 
           function elegirPago(medio) {
             pagoElegido = medio;
             document.querySelectorAll("#chipsPago .chip").forEach(x => x.classList.toggle("activo", x.dataset.pago === medio));
           }
 
-          // para vender otra cosa al cliente recien guardado (ej: bidones y un dispensador)
-          $("btnOtro").onclick = () => {
-            const c = clientes.find(x => x.id === ultimoCliente);
-            if (!c) return;
-            $("nombre").value = c.nombre; $("direccion").value = c.direccion; $("telefono").value = c.telefono || "";
-            revisarCliente("nombre");
-            $("btnOtro").hidden = true;
-            $("avisoVenta").textContent = "";
-          };
-
-          $("nombre").addEventListener("input", () => { $("btnOtro").hidden = true; revisarCliente("nombre"); });
+          $("nombre").addEventListener("input", () => { $("trasGuardar").innerHTML = ""; revisarCliente("nombre"); });
           $("direccion").addEventListener("input", () => revisarCliente("direccion"));
-          $("cantidad").addEventListener("input", calcularTotal);
-          $("precio").addEventListener("input", calcularTotal);
-          $("menos").onclick = () => { $("cantidad").value = Math.max(1, (parseInt($("cantidad").value, 10) || 1) - 1); calcularTotal(); };
-          $("mas").onclick = () => { $("cantidad").value = (parseInt($("cantidad").value, 10) || 0) + 1; calcularTotal(); };
+
+          // texto del comprobante de un pedido
+          function textoComprobante(grupo, c) {
+            const d = new Date(grupo[0].ts);
+            let txt = "*Agua Poseidon* - Comprobante de pedido\n";
+            txt += "Cliente: " + (c ? nombreDe(c) : "") + "\n";
+            txt += "Fecha: " + d.toLocaleDateString("es-CL") + " " + d.toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" }) + "\n\n";
+            grupo.forEach(v => {
+              txt += "- " + v.cantidad + " x " + PRODUCTOS[prod(v)].nombre + " a " + plata(v.precio) + " = " + plata(v.cantidad * v.precio) + "\n";
+            });
+            txt += "\n*Total: " + plata(totalGrupo(grupo)) + "*\n";
+            const pend = grupo.some(esPendiente);
+            txt += pend ? "Estado: pendiente de pago" : "Pagado con " + (MEDIOS[grupo[0].pago] || "").toLowerCase();
+            txt += "\n\n¡Gracias por su compra!";
+            return txt;
+          }
+          function linkComprobante(grupo, c) {
+            const tel = c ? telInternacional(c.telefono) : "";
+            if (!tel) return null;
+            const a = document.createElement("a");
+            a.href = "https://wa.me/" + tel + "?text=" + encodeURIComponent(textoComprobante(grupo, c));
+            return a;
+          }
 
           $("btnGuardar").onclick = () => {
             const nombre = $("nombre").value.trim();
             const direccion = $("direccion").value.trim();
-            const cant = parseInt($("cantidad").value, 10) || 0;
-            const precio = parseInt($("precio").value, 10);
+            const lineas = ORDEN.filter(p => carrito[p].cant > 0);
 
             if (!nombre && !direccion) { $("avisoVenta").textContent = "Escribe el nombre o la dirección del cliente."; return; }
-            if (cant < 1) { $("avisoVenta").textContent = "La cantidad tiene que ser 1 o más."; return; }
-            if (isNaN(precio) || precio < 0) { $("avisoVenta").textContent = "Escribe el " + PRODUCTOS[productoElegido].precioTxt.toLowerCase() + "."; return; }
+            if (lineas.length === 0) { $("avisoVenta").textContent = "Elige al menos un producto (toca + en lo que vendió)."; return; }
+            const sinPrecio = lineas.find(p => !carrito[p].precio);
+            if (sinPrecio) { $("avisoVenta").textContent = "Falta el " + PRODUCTOS[sinPrecio].precioTxt.toLowerCase() + "."; return; }
 
             const telefono = $("telefono").value.trim();
             let c = buscarCliente(nombre, direccion);
@@ -1045,50 +1226,80 @@ jobs:
               if (direccion && normal(c.direccion) !== normal(direccion)) c.direccion = direccion;
             }
 
+            // un pedido = una venta por cada producto, todas con el mismo pedidoId
             const ahora = Date.now();
-            ventas.push({
-              id: "v" + ahora, clienteId: c.id, producto: productoElegido, cantidad: cant, precio: precio, ts: ahora,
-              pago: pagoElegido, fechaPago: pagoElegido === "pendiente" ? null : ahora
+            const pedidoId = "p" + ahora;
+            const grupo = [];
+            lineas.forEach(p => {
+              const v = {
+                id: "v" + ahora + "_" + p, pedidoId: pedidoId, clienteId: c.id, producto: p,
+                cantidad: carrito[p].cant, precio: carrito[p].precio, ts: ahora,
+                pago: pagoElegido, fechaPago: pagoElegido === "pendiente" ? null : ahora
+              };
+              ventas.push(v);
+              grupo.push(v);
             });
             guardar();
 
             const t = totalesCliente(c.id);
-            $("avisoVenta").textContent = "Guardado: " + cant + " " + PRODUCTOS[productoElegido].nombre + " a " + nombreDe(c) + " por " + plata(cant * precio) + " (" + MEDIOS[pagoElegido] + "). En total lleva " + textoUnidades(t.porProd) + " (" + plata(t.plata) + ")" + (t.deuda > 0 ? " y debe " + plata(t.deuda) : "") + ".";
+            $("avisoVenta").textContent = "Pedido guardado: " + lineas.map(p => nombreCant(p, carrito[p].cant)).join(", ") +
+              " a " + nombreDe(c) + " por " + plata(totalGrupo(grupo)) + " (" + MEDIOS[pagoElegido] + "). En total lleva " +
+              textoUnidades(t.porProd) + " (" + plata(t.plata) + ")" + (t.deuda > 0 ? " y debe " + plata(t.deuda) : "") + ".";
 
-            ultimoCliente = c.id;
-            $("btnOtro").hidden = false;
-            $("nombre").value = ""; $("direccion").value = ""; $("telefono").value = ""; $("cantidad").value = 1;
+            // boton para mandarle el comprobante al cliente
+            $("trasGuardar").innerHTML = "";
+            const comp = linkComprobante(grupo, c);
+            if (comp) {
+              comp.className = "wsp-btn";
+              comp.textContent = "Enviar comprobante por WhatsApp";
+              $("trasGuardar").appendChild(comp);
+            }
+
+            $("nombre").value = ""; $("direccion").value = ""; $("telefono").value = "";
             $("clienteOk").textContent = "";
-            elegirProducto("b20");
+            nuevoCarrito();
             elegirPago("efectivo");
-            calcularTotal();
             todo();
           };
 
           // ===================== CLIENTES =====================
-          function filaVenta(v, mostrarCliente) {
+          // una fila por pedido, con el detalle de cada producto
+          function filaPedido(grupo, mostrarCliente) {
+            const v0 = grupo[0];
+            const clave = clavePedido(grupo);
             const cont = document.createElement("div");
             const fila = document.createElement("div");
-            fila.className = "mov";
+            fila.className = "mov pedido";
             cont.appendChild(fila);
-            const c = clientes.find(x => x.id === v.clienteId);
-            const hora = new Date(v.ts).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" });
-            const fecha = new Date(v.ts).toLocaleDateString("es-CL", { day: "numeric", month: "short", year: "numeric" });
+            const c = clientes.find(x => x.id === v0.clienteId);
+            const hora = new Date(v0.ts).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" });
+            const fecha = new Date(v0.ts).toLocaleDateString("es-CL", { day: "numeric", month: "short", year: "numeric" });
+            const total = totalGrupo(grupo);
 
-            fila.innerHTML = '<div class="info"><div class="quien"></div><div class="det"></div><span class="etiqueta"></span></div><span class="monto"></span><div class="acciones"></div>';
-            const quien = c ? nombreDe(c) : (v.nombreBorrado ? v.nombreBorrado + " (borrado)" : "Cliente borrado");
+            fila.innerHTML = '<div class="info"><div class="quien"></div><div class="det"></div><span class="etiqueta"></span></div><span class="monto"></span><div class="acciones"></div><div class="lineas"></div>';
+            const quien = c ? nombreDe(c) : (v0.nombreBorrado ? v0.nombreBorrado + " (borrado)" : "Cliente borrado");
             fila.querySelector(".quien").textContent = mostrarCliente ? quien : fecha;
-            fila.querySelector(".det").textContent = hora + " · " + v.cantidad + " " + PRODUCTOS[prod(v)].nombre + " a " + plata(v.precio);
-            fila.querySelector(".monto").textContent = plata(v.cantidad * v.precio);
+            const unidades = grupo.reduce((n, v) => n + v.cantidad, 0);
+            fila.querySelector(".det").textContent = hora + " · " + (grupo.length > 1 ? grupo.length + " productos, " + unidades + " unid." : "1 producto");
+            const lin = fila.querySelector(".lineas");
+            grupo.forEach(v => {
+              const d = document.createElement("div");
+              d.innerHTML = "<span></span><span></span>";
+              d.children[0].textContent = v.cantidad + " × " + PRODUCTOS[prod(v)].nombre + " (" + plata(v.precio) + " c/u)";
+              d.children[1].textContent = plata(v.cantidad * v.precio);
+              lin.appendChild(d);
+            });
+            fila.querySelector(".monto").textContent = plata(total);
 
+            const pendientes = grupo.filter(esPendiente);
             const etq = fila.querySelector(".etiqueta");
-            if (esPendiente(v)) {
+            if (pendientes.length > 0) {
               etq.textContent = "Pendiente de pago";
               etq.classList.add("pend");
-            } else if (v.pago) {
-              let txt = MEDIOS[v.pago] || "Pagado";
-              if (v.fechaPago && claveDia(v.fechaPago) !== claveDia(v.ts)) {
-                txt += " · pagó el " + new Date(v.fechaPago).toLocaleDateString("es-CL", { day: "numeric", month: "short" });
+            } else if (v0.pago) {
+              let txt = MEDIOS[v0.pago] || "Pagado";
+              if (v0.fechaPago && claveDia(v0.fechaPago) !== claveDia(v0.ts)) {
+                txt += " · pagó el " + new Date(v0.fechaPago).toLocaleDateString("es-CL", { day: "numeric", month: "short" });
               }
               etq.textContent = txt;
             } else {
@@ -1096,27 +1307,43 @@ jobs:
             }
 
             const acc = fila.querySelector(".acciones");
-            if (esPendiente(v)) {
+            if (pendientes.length > 0) {
               const bc = document.createElement("button");
               bc.type = "button"; bc.className = "btn-sec cobrar"; bc.textContent = "Cobrar";
-              bc.onclick = (e) => { e.stopPropagation(); cobrando = v.id; borrarPendiente = null; todo(); };
+              bc.onclick = (e) => { e.stopPropagation(); cobrando = clave; borrarPendiente = null; todo(); };
               acc.appendChild(bc);
+            }
+            if (!mostrarCliente) {
+              const comp = linkComprobante(grupo, c);
+              if (comp) {
+                comp.className = "btn-sec";
+                comp.style.textDecoration = "none";
+                comp.style.textAlign = "center";
+                comp.textContent = "Enviar";
+                acc.appendChild(comp);
+              }
             }
             const btn = document.createElement("button");
             btn.type = "button"; btn.className = "btn-sec";
-            if (borrarPendiente === v.id) {
+            if (borrarPendiente === clave) {
               btn.textContent = "¿Borrar?";
               btn.classList.add("peligro");
-              btn.onclick = (e) => { e.stopPropagation(); ventas = ventas.filter(x => x.id !== v.id); borrarPendiente = null; guardar(); todo(); };
+              btn.onclick = (e) => {
+                e.stopPropagation();
+                const ids = grupo.map(x => x.id);
+                ventas = ventas.filter(x => !ids.includes(x.id));
+                borrarPendiente = null; guardar(); todo();
+              };
             } else {
               btn.textContent = "Borrar";
-              btn.onclick = (e) => { e.stopPropagation(); borrarPendiente = v.id; cobrando = null; todo(); };
+              btn.onclick = (e) => { e.stopPropagation(); borrarPendiente = clave; cobrando = null; todo(); };
             }
             acc.appendChild(btn);
 
-            if (cobrando === v.id) {
-              const caja = opcionesCobro("¿Cómo pagó " + plata(v.cantidad * v.precio) + "?");
-              botonesCobro(caja, (m) => cobrar([v], m));
+            if (cobrando === clave) {
+              const deuda = totalGrupo(pendientes);
+              const caja = opcionesCobro("¿Cómo pagó " + plata(deuda) + "?");
+              botonesCobro(caja, (m) => cobrar(pendientes, m));
               cont.appendChild(caja);
             }
             return cont;
@@ -1199,7 +1426,8 @@ jobs:
               '<div class="ficha-tots"><div><span>Pedidos</span><b class="p"></b></div><div><span>Total $</span><b class="m"></b></div></div><div class="ficha-prod"></div>';
             cab.querySelector(".nom").textContent = nombreDe(c);
             cab.querySelector(".dir").textContent = c.nombre ? (c.direccion || "Sin dirección") : "";
-            cab.querySelector(".p").textContent = susVentas.length;
+            const susPedidos = agruparPedidos(susVentas);
+            cab.querySelector(".p").textContent = susPedidos.length;
             cab.querySelector(".ficha-prod").textContent = textoUnidades(t.porProd);
             cab.querySelector(".m").textContent = plata(t.plata);
             const debe = document.createElement("div");
@@ -1251,10 +1479,10 @@ jobs:
               aWsp.href = "https://wa.me/" + tel + "?text=" + encodeURIComponent("Hola" + quien + ", ¿cómo está? Le escribo por los bidones de agua.");
               aWsp.textContent = "Mensaje WhatsApp"; aWsp.className = "wsp";
               btns.appendChild(aWsp);
-              // llamada de whatsapp: se abre el chat y se toca el telefono de arriba
+              // llamada de whatsapp: sale directo si el numero esta guardado en los contactos
               const aWspLlamar = document.createElement("a");
-              aWspLlamar.href = "https://wa.me/" + tel; aWspLlamar.textContent = "Llamada WhatsApp"; aWspLlamar.className = "wsp";
-              aWspLlamar.onclick = () => { avisoFicha = "En el chat de WhatsApp toca el ícono del teléfono (arriba a la derecha) para llamar."; setTimeout(dibujarClientes, 300); };
+              // llamar=1: la parte Android busca el contacto y abre la llamada de voz de WhatsApp directo
+              aWspLlamar.href = "https://wa.me/" + tel + "?llamar=1"; aWspLlamar.textContent = "Llamada WhatsApp"; aWspLlamar.className = "wsp";
               btns.appendChild(aWspLlamar);
               // cobrar: mensaje con lo que debe
               if (t.deuda > 0) {
@@ -1305,7 +1533,7 @@ jobs:
               $("nombre").value = c.nombre || ""; $("direccion").value = c.direccion || ""; $("telefono").value = c.telefono || "";
               document.querySelector('.tabs button[data-tab="venta"]').click();
               revisarCliente("nombre");
-              $("cantidad").focus();
+              $("carrito").scrollIntoView({ block: "center" });
             };
             lista.appendChild(nueva);
 
@@ -1340,8 +1568,8 @@ jobs:
             const caja = document.createElement("div");
             caja.className = "dia";
             caja.innerHTML = '<div class="dia-cab"><span>Todos los pedidos</span><span></span></div>';
-            caja.querySelector(".dia-cab span:last-child").textContent = susVentas.length + (susVentas.length === 1 ? " pedido" : " pedidos");
-            susVentas.forEach(v => caja.appendChild(filaVenta(v, false)));
+            caja.querySelector(".dia-cab span:last-child").textContent = susPedidos.length + (susPedidos.length === 1 ? " pedido" : " pedidos");
+            susPedidos.forEach(g => caja.appendChild(filaPedido(g, false)));
             lista.appendChild(caja);
           }
 
@@ -1349,13 +1577,7 @@ jobs:
           function textoPendiente(susVentas) {
             const cuenta = cuentaVacia();
             susVentas.filter(esPendiente).forEach(v => { cuenta[prod(v)] += v.cantidad; });
-            const nombres = {
-              b20: ["bidón de 20 litros", "bidones de 20 litros"],
-              b10: ["bidón de 10 litros", "bidones de 10 litros"],
-              dusb: ["dispensador USB", "dispensadores USB"],
-              dbas: ["dispensador básico", "dispensadores básicos"]
-            };
-            const partes = ORDEN.filter(p => cuenta[p] > 0).map(p => cuenta[p] + " " + nombres[p][cuenta[p] === 1 ? 0 : 1]);
+            const partes = ORDEN.filter(p => cuenta[p] > 0).map(p => nombreCant(p, cuenta[p]));
             if (partes.length <= 1) return partes.join("");
             return partes.slice(0, -1).join(", ") + " y " + partes[partes.length - 1];
           }
@@ -1409,7 +1631,7 @@ jobs:
           function confirmarEliminar(c, susVentas) {
             const caja = document.createElement("div");
             caja.className = "caja confirmar";
-            const n = susVentas.length;
+            const n = agruparPedidos(susVentas).length;
             const p = document.createElement("p");
             p.textContent = n === 0
               ? "¿Eliminar a " + nombreDe(c) + "? No tiene pedidos."
@@ -1455,24 +1677,25 @@ jobs:
           function tablaResumen(titulo, datos, nombreClave) {
             const caja = document.createElement("div");
             caja.className = "dia";
-            caja.innerHTML = '<div class="dia-cab"><span></span><span></span></div><div class="tabla-scroll"><table class="resumen-tabla"><thead><tr><th></th><th>20 L</th><th>10 L</th><th>Disp.</th><th>Total</th></tr></thead><tbody></tbody></table></div>';
+            caja.innerHTML = '<div class="dia-cab"><span></span><span></span></div><div class="tabla-scroll"><table class="resumen-tabla"><thead><tr><th></th><th>20 L</th><th>10 L</th><th>Nuevos</th><th>Disp.</th><th>Total</th></tr></thead><tbody></tbody></table></div>';
             caja.querySelector(".dia-cab span:first-child").textContent = titulo;
             const cuerpo = caja.querySelector("tbody");
             Object.keys(datos).sort().reverse().forEach(k => {
               const tr = document.createElement("tr");
-              tr.innerHTML = "<td></td><td></td><td></td><td></td><td></td>";
+              tr.innerHTML = "<td></td><td></td><td></td><td></td><td></td><td></td>";
               const tds = tr.querySelectorAll("td");
               const c = datos[k].c;
               tds[0].textContent = nombreClave(k);
               tds[1].textContent = c.b20;
               tds[2].textContent = c.b10;
-              tds[3].textContent = c.dusb + c.dbas;
-              tds[4].textContent = plata(datos[k].p);
+              tds[3].textContent = c.n20 + c.n10;
+              tds[4].textContent = c.dusb + c.dbas;
+              tds[5].textContent = plata(datos[k].p);
               if (datos[k].pend > 0) {
                 const sp = document.createElement("span");
                 sp.className = "mini-debe";
                 sp.textContent = "debe " + plata(datos[k].pend);
-                tds[4].appendChild(sp);
+                tds[5].appendChild(sp);
               }
               cuerpo.appendChild(tr);
             });
@@ -1492,6 +1715,7 @@ jobs:
           function dibujarHistorial() {
             const lista = $("listaHistorial");
             lista.innerHTML = "";
+            dibujarCierre();
             if (ventas.length === 0) {
               lista.innerHTML = '<div class="vacio">Todavía no hay ventas registradas.</div>';
               return;
@@ -1528,9 +1752,43 @@ jobs:
               caja.innerHTML = '<div class="dia-cab"><span></span><span></span></div>';
               caja.querySelector(".dia-cab span:first-child").textContent = nombreDia(k);
               caja.querySelector(".dia-cab span:last-child").textContent = b + " unid. · " + plata(p);
-              items.forEach(v => caja.appendChild(filaVenta(v, true)));
+              agruparPedidos(items).forEach(g => caja.appendChild(filaPedido(g, true)));
               lista.appendChild(caja);
             });
+          }
+
+          // cierre del dia: resumen para mandar por WhatsApp
+          function dibujarCierre() {
+            const hoy = claveDia(Date.now());
+            const cant = cuentaVacia(), monto = cuentaVacia();
+            const medio = { efectivo: 0, transferencia: 0, tarjeta: 0 };
+            let total = 0, pendHoy = 0, pendTotal = 0;
+            const pedidosHoy = agruparPedidos(ventas.filter(v => claveDia(v.ts) === hoy)).length;
+            ventas.forEach(v => {
+              const m = v.cantidad * v.precio;
+              if (esPendiente(v)) pendTotal += m;
+              if (claveDia(v.ts) === hoy) {
+                cant[prod(v)] += v.cantidad; monto[prod(v)] += m; total += m;
+                if (esPendiente(v)) pendHoy += m;
+              }
+              if (!esPendiente(v) && claveDia(v.fechaPago || v.ts) === hoy && medio[v.pago] !== undefined) medio[v.pago] += m;
+            });
+            const f = new Date().toLocaleDateString("es-CL", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+            let txt = "*Cierre del día - Agua Poseidon*\n" + f.charAt(0).toUpperCase() + f.slice(1) + "\n\n";
+            const vendidos = ORDEN.filter(p => cant[p] > 0);
+            if (vendidos.length === 0) txt += "Sin ventas hoy.\n";
+            vendidos.forEach(p => { txt += PRODUCTOS[p].nombre + ": " + cant[p] + " (" + plata(monto[p]) + ")\n"; });
+            txt += "\nPedidos: " + pedidosHoy + "\n";
+            txt += "*Total vendido: " + plata(total) + "*\n\n";
+            txt += "Cobrado hoy:\n";
+            txt += "Efectivo: " + plata(medio.efectivo) + "\n";
+            txt += "Transferencia: " + plata(medio.transferencia) + "\n";
+            txt += "Tarjeta: " + plata(medio.tarjeta) + "\n";
+            txt += "*Total cobrado: " + plata(medio.efectivo + medio.transferencia + medio.tarjeta) + "*\n\n";
+            txt += "Quedó pendiente hoy: " + plata(pendHoy) + "\n";
+            txt += "Total por cobrar (todos los días): " + plata(pendTotal);
+            $("textoCierre").textContent = txt.replace(/\*/g, "");
+            $("btnCierre").href = "https://wa.me/?text=" + encodeURIComponent(txt);
           }
 
           // ===================== AJUSTES =====================
@@ -1542,7 +1800,7 @@ jobs:
               precios[p] = n;
             }
             guardar();
-            elegirProducto(productoElegido);
+            nuevoCarrito();
             $("avisoPrecio").textContent = "Precios guardados.";
           };
 
@@ -1672,7 +1930,7 @@ jobs:
               respaldoPorRecuperar = null;
               guardar();
               ORDEN.forEach(k => { $("precio_" + k).value = precios[k] || ""; });
-              elegirProducto(productoElegido);
+              nuevoCarrito();
               caja.innerHTML = "";
               $("avisoRespaldo").textContent = "Datos recuperados: " + clientes.length + " clientes y " + ventas.length + " ventas.";
               todo();
@@ -1710,7 +1968,7 @@ jobs:
           $("fechaHoy").textContent = textoFecha.charAt(0).toUpperCase() + textoFecha.slice(1);
           cargar();
           ORDEN.forEach(p => { $("precio_" + p).value = precios[p] || ""; });
-          elegirProducto("b20");
+          nuevoCarrito();
           todo();
           if (!hayAndroid) {
             // abierto fuera de la app (navegador): no hay como guardar archivos
