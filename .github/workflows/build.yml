@@ -63,8 +63,8 @@ jobs:
                   applicationId "cl.bidones.contador"
                   minSdk 26
                   targetSdk 34
-                  versionCode 9
-                  versionName "9.0"
+                  versionCode 10
+                  versionName "10.0"
               }
 
               // clave fija para firmar: asi cada version nueva se instala encima sin borrar los datos
@@ -461,6 +461,10 @@ jobs:
             --agua: #0b6e99;
             --agua-txt: #ffffff;
             --agua-suave: #d6ecf4;
+            --prod: #0b6e99;
+            --prod-on: #064a6b;
+            --prod-borde: #3fd0f5;
+            --dir: #0a5f87;
             --peligro: #b3261e;
             --ok: #1d7a4a;
             --fuente: system-ui, "Roboto", sans-serif;
@@ -470,6 +474,7 @@ jobs:
               --bg: #0a1a21; --card: #11262f; --fg: #e3f1f6; --muted: #8fb0bd;
               --line: #21404c; --agua: #4fb8e3; --agua-txt: #06202b; --agua-suave: #15384a;
               --peligro: #ff8a80; --ok: #6fd39b;
+              --prod: #0e5f86; --prod-on: #0a3f5c; --prod-borde: #3fd0f5; --dir: #7fd3f7;
               color-scheme: dark;
             }
           }
@@ -482,8 +487,12 @@ jobs:
           }
           .app { max-width: 480px; margin: 0 auto; padding: 16px 16px 40px; display: flex; flex-direction: column; gap: 14px; }
 
-          header h1 { margin: 0; font-size: 1.3rem; font-weight: 800; }
-          header p { margin: 2px 0 0; color: var(--muted); font-size: 0.9rem; }
+          header { display: flex; align-items: center; gap: 12px; }
+          header .logo { width: 48px; height: 48px; flex: none; border-radius: 14px; background: #0b3e5c; display: flex; align-items: center; justify-content: center; }
+          header .logo svg { width: 40px; height: 40px; }
+          header .marca { font-size: 0.75rem; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase; color: var(--dir); }
+          header h1 { margin: 0; font-size: 1.2rem; font-weight: 800; line-height: 1.2; }
+          header p { margin: 2px 0 0; color: var(--muted); font-size: 0.88rem; }
 
           .resumen {
             background: var(--agua); color: var(--agua-txt);
@@ -547,13 +556,18 @@ jobs:
           }
           .cliente-cab {
             width: 100%; border: 0; background: transparent; color: var(--fg); text-align: left; cursor: pointer;
-            padding: 14px 16px; display: flex; justify-content: space-between; gap: 10px; font-family: var(--fuente);
+            padding: 14px 16px; display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; font-family: var(--fuente);
           }
-          .cliente-cab .nom { font-weight: 800; font-size: 1.02rem; }
-          .cliente-cab .dir { color: var(--muted); font-size: 0.88rem; }
-          .cliente-cab .tot { text-align: right; font-variant-numeric: tabular-nums; max-width: 55%; }
-          .cliente-cab .tot b { display: block; font-size: 1.05rem; }
-          .cliente-cab .tot span { color: var(--muted); font-size: 0.85rem; display: block; }
+          .cliente-cab .nom { font-weight: 800; font-size: 1.08rem; overflow-wrap: anywhere; }
+          .cliente-cab .dir { color: var(--dir); font-weight: 700; font-size: 0.95rem; display: flex; align-items: center; gap: 4px; overflow-wrap: anywhere; }
+          .cliente-cab .dir svg { width: 14px; height: 14px; flex: none; fill: currentColor; }
+          .cliente-cab .tot { text-align: right; font-variant-numeric: tabular-nums; }
+          .cliente-cab .tot b { display: block; font-size: 1.1rem; }
+          .cliente-cab .prods {
+            grid-column: 1 / -1; display: flex; justify-content: space-between; gap: 8px; align-items: center;
+            border-top: 1px solid var(--line); padding-top: 8px; margin-top: 4px; color: var(--muted); font-size: 0.85rem;
+          }
+          .cliente-cab .prods .ver { color: var(--dir); font-weight: 800; white-space: nowrap; }
           .cliente-det { border-top: 1px solid var(--line); }
 
           .dia { background: var(--card); border: 1px solid var(--line); border-radius: 16px; overflow: hidden; }
@@ -654,22 +668,31 @@ jobs:
           .tel-fila input { flex: 1; min-width: 0; }
           .tel-fila button { flex: none; height: 50px; padding: 0 12px; }
           .carrito { display: flex; flex-direction: column; gap: 6px; }
-          .grupo-lbl { font-size: 0.78rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin-top: 6px; }
+          .grupo-lbl { font-size: 0.8rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; color: var(--dir); margin-top: 8px; }
           .item {
-            display: grid; grid-template-columns: 1fr auto; gap: 6px 10px; align-items: center;
-            border: 1px solid var(--line); border-radius: 12px; padding: 8px 10px; background: var(--bg);
+            display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 10px; align-items: center;
+            border: 3px solid transparent; border-radius: 14px; padding: 10px 10px;
+            background: var(--prod); color: #ffffff;
           }
-          .item.con { border-color: var(--agua); background: var(--agua-suave); }
-          .item .nom-prod { font-weight: 800; font-size: 0.98rem; }
-          .item .precio-cu { display: flex; align-items: center; gap: 4px; font-size: 0.82rem; color: var(--muted); }
-          .item .precio-cu input { width: 92px; height: 34px; font-size: 0.95rem; padding: 0 8px; }
-          .item .paso { display: flex; align-items: center; gap: 6px; grid-row: span 2; }
+          .item.con { background: var(--prod-on); border-color: var(--prod-borde); }
+          .item .nom-prod { grid-column: 1 / -1; display: flex; justify-content: space-between; gap: 8px; font-weight: 800; font-size: 1.08rem; color: #ffffff; }
+          .item .precio-cu { display: flex; align-items: center; gap: 4px; min-width: 0; font-size: 1rem; font-weight: 800; color: #d9f1fb; }
+          .item .precio-cu input {
+            flex: 1; min-width: 0; width: 100%; max-width: 110px; height: 40px; font-size: 1rem; font-weight: 700; padding: 0 8px;
+            background: #ffffff; color: #0f2a36; border: 0;
+          }
+          .item .paso { display: flex; align-items: center; gap: 5px; }
           .item .paso button {
-            width: 42px; height: 42px; border-radius: 10px; border: 1px solid var(--line); background: var(--card);
-            color: var(--fg); font-size: 1.4rem; font-weight: 700; cursor: pointer;
+            width: 42px; height: 42px; border-radius: 12px; border: 0; background: #ffffff;
+            color: #0b6e99; font-size: 1.5rem; font-weight: 800; cursor: pointer;
           }
-          .item .paso input { width: 52px; height: 42px; text-align: center; font-size: 1.15rem; font-weight: 800; padding: 0; }
-          .item .sub-item { font-size: 0.82rem; font-weight: 700; color: var(--fg); min-height: 1em; }
+          .item .paso input {
+            width: 46px; height: 42px; text-align: center; font-size: 1.2rem; font-weight: 800; padding: 0;
+            background: #ffffff; color: #0f2a36; border: 0;
+          }
+          .item .paso input::placeholder { color: #8aa7b4; }
+          .item .sub-item { font-size: 0.95rem; font-weight: 800; color: #9fe6ff; white-space: nowrap; }
+          .item .paso button:focus-visible, .item input:focus-visible { outline: 3px solid var(--prod-borde); }
           .detalle-total { font-size: 0.85rem; color: var(--muted); margin-top: 4px; }
           .mov.pedido { flex-wrap: wrap; }
           .lineas { flex-basis: 100%; order: 3; font-size: 0.88rem; color: var(--fg); font-variant-numeric: tabular-nums;
@@ -687,8 +710,22 @@ jobs:
           <body>
           <div class="app">
             <header>
-              <h1>Contador de Bidones Poseidon</h1>
-              <p id="fechaHoy"></p>
+              <div class="logo" aria-hidden="true">
+                <!-- el mismo bidon del icono de la app -->
+                <svg viewBox="22 14 64 76">
+                  <path fill="#9ED8F2" d="M36,30h36c4,0 7,3 7,7v41c0,4 -3,7 -7,7h-36c-4,0 -7,-3 -7,-7v-41c0,-4 3,-7 7,-7z"/>
+                  <path fill="#2E9FD6" d="M29,66c8,-4 17,4 25,0c8,-4 17,4 25,0v12c0,4 -3,7 -7,7h-36c-4,0 -7,-3 -7,-7z"/>
+                  <path fill="#E6F6FD" d="M34,37h4v26h-4z"/>
+                  <path fill="#9ED8F2" d="M46,24h16v7h-16z"/>
+                  <path fill="#111111" d="M44,17h20v8h-20z"/>
+                  <path fill="#0D1418" d="M29,49h50v17h-50z"/>
+                </svg>
+              </div>
+              <div>
+                <div class="marca">Agua Poseidon</div>
+                <h1>Contador de Bidones</h1>
+                <p id="fechaHoy"></p>
+              </div>
             </header>
 
             <section class="resumen">
@@ -1127,11 +1164,10 @@ jobs:
                 const it = document.createElement("div");
                 it.className = "item" + (carrito[p].cant > 0 ? " con" : "");
                 it.innerHTML =
-                  '<div class="nom-prod"></div>' +
-                  '<div class="paso"><button type="button" class="menos" aria-label="Restar">−</button><input type="number" inputmode="numeric" min="0" class="cant"><button type="button" class="mas" aria-label="Sumar">+</button></div>' +
-                  '<div class="precio-cu">c/u $<input type="number" inputmode="numeric" min="0" class="pre"></div>' +
-                  '<div class="sub-item"></div>';
-                it.querySelector(".nom-prod").textContent = PRODUCTOS[p].nombre;
+                  '<div class="nom-prod"><span class="nom-txt"></span><span class="sub-item"></span></div>' +
+                  '<div class="precio-cu">$<input type="number" inputmode="numeric" min="0" class="pre"></div>' +
+                  '<div class="paso"><button type="button" class="menos" aria-label="Restar">−</button><input type="number" inputmode="numeric" min="0" class="cant"><button type="button" class="mas" aria-label="Sumar">+</button></div>';
+                it.querySelector(".nom-txt").textContent = PRODUCTOS[p].nombre;
                 const inCant = it.querySelector(".cant");
                 const inPre = it.querySelector(".pre");
                 inCant.value = carrito[p].cant || "";
@@ -1140,7 +1176,7 @@ jobs:
                 inPre.setAttribute("aria-label", PRODUCTOS[p].precioTxt);
                 const pintar = () => {
                   it.classList.toggle("con", carrito[p].cant > 0);
-                  it.querySelector(".sub-item").textContent = carrito[p].cant > 0 ? "= " + plata(carrito[p].cant * carrito[p].precio) : "";
+                  it.querySelector(".sub-item").textContent = carrito[p].cant > 0 ? plata(carrito[p].cant * carrito[p].precio) : "";
                   calcularTotal();
                 };
                 it.querySelector(".menos").onclick = () => { carrito[p].cant = Math.max(0, carrito[p].cant - 1); inCant.value = carrito[p].cant || ""; pintar(); };
@@ -1390,11 +1426,17 @@ jobs:
             datos.forEach(({ c, t }) => {
               const caja = document.createElement("div");
               caja.className = "cliente";
-              caja.innerHTML = '<button type="button" class="cliente-cab"><div><div class="nom"></div><div class="dir"></div></div><div class="tot"><b></b><span></span></div></button>';
+              caja.innerHTML = '<button type="button" class="cliente-cab"><div><div class="nom"></div><div class="dir"></div></div><div class="tot"><b></b></div>' +
+                '<div class="prods"><span class="lista-prods"></span><span class="ver">Ver ›</span></div></button>';
               caja.querySelector(".nom").textContent = nombreDe(c);
-              caja.querySelector(".dir").textContent = c.nombre ? (c.direccion || "Sin dirección") : "";
+              const dir = c.nombre ? (c.direccion || "Sin dirección") : "";
+              if (dir) {
+                // icono de ubicacion + direccion
+                caja.querySelector(".dir").innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a7 7 0 0 0-7 7c0 5 7 13 7 13s7-8 7-13a7 7 0 0 0-7-7zm0 9.5A2.5 2.5 0 1 1 12 6.5a2.5 2.5 0 0 1 0 5z"/></svg><span></span>';
+                caja.querySelector(".dir span").textContent = dir;
+              }
               caja.querySelector(".tot b").textContent = plata(t.plata);
-              caja.querySelector(".tot span").textContent = textoUnidades(t.porProd) + " ›";
+              caja.querySelector(".lista-prods").textContent = textoUnidades(t.porProd);
               if (t.deuda > 0) {
                 const d = document.createElement("div");
                 d.className = "debe";
